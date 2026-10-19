@@ -23,6 +23,13 @@ await page.getByRole('button',{name:'New session',exact:true}).first().click();a
 await effort('low');
 await page.locator('[data-composer-input]').fill('Synthetic regression session B');await page.getByRole('button',{name:'Send message',exact:true}).click();await page.getByText('Synthetic response. No external inference.',{exact:true}).last().waitFor();
 await page.waitForTimeout(500);assert.equal((await rpc('session/rename',{request:{sessionId:B,title:'Session B'}})).ok,true);
+await page.locator('[data-composer-input]').fill('Synthetic cancellation probe');await page.getByRole('button',{name:'Send message',exact:true}).click();
+await page.getByText('Synthetic stream awaiting cancellation',{exact:true}).waitFor();await page.getByRole('button',{name:'Stop generating',exact:true}).click();
+await page.getByRole('button',{name:'Send message',exact:true}).waitFor();
+const completed=await page.getByText('Synthetic response. No external inference.',{exact:true}).count();
+await page.locator('[data-composer-input]').fill('Synthetic continue probe');await page.getByRole('button',{name:'Send message',exact:true}).click();
+await page.waitForFunction(count=>[...document.querySelectorAll('p')].filter(p=>p.textContent==='Synthetic response. No external inference.').length>count,completed);
+assert.equal(await speed.inputValue(),'default');
 await page.getByRole('treeitem').filter({hasText:'Session A'}).click();await page.waitForTimeout(500);assert.equal(await speed.inputValue(),'priority');assert.ok(await page.getByRole('button',{name:/reasoning effort high/}).count());
 await page.reload();await speed.waitFor();await page.waitForTimeout(400);assert.equal(await speed.inputValue(),'priority');assert.ok(await page.getByRole('button',{name:/reasoning effort high/}).count());
 await page.screenshot({path:`${process.env.DSH_TEST_ARTIFACTS}/session-a-restored.png`});
@@ -38,4 +45,4 @@ for(const method of ['start','status','cancel'])await page.route(`**/api/cleangp
 await page.getByRole('button',{name:'Reauthorize with ChatGPT',exact:true}).click();await page.getByRole('button',{name:'Cancel authorization',exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Reauthorize with ChatGPT',exact:true}).isDisabled(),true);assert.equal(attempts,1);
 await page.getByRole('button',{name:'Cancel authorization',exact:true}).click();await page.getByText('synthetic: Signed in · cancelled',{exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Reauthorize with ChatGPT',exact:true}).isEnabled(),true);
 await page.screenshot({path:`${process.env.DSH_TEST_ARTIFACTS}/models-cancelled.png`});assert.deepEqual(errors,[]);
-console.log('PASS: native effort, A/B speeds, refresh restore, write failure, Models reauthorization/cancel, no page errors');await browser.close();
+console.log('PASS: native effort, A/B speeds, refresh restore, cancel then continue, write failure, Models reauthorization/cancel, no page errors');await browser.close();

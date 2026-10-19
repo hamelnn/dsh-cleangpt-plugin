@@ -8,6 +8,12 @@ globalThis.fetch=async(input,init)=>{
  if(url.endsWith('/models'))return Response.json({models:[{slug:'mock-gpt',display_name:'Synthetic GPT',visibility:'list'}]});
  if(url.endsWith('/responses')){
  const body=JSON.parse(init.body);await appendFile(process.env.DSH_TEST_CAPTURE,JSON.stringify(body)+'\n');
+ const history=JSON.stringify(body.input);
+ if(history.lastIndexOf('Synthetic cancellation probe')>history.lastIndexOf('Synthetic continue probe'))
+   return new Response(new ReadableStream({start(controller){
+     controller.enqueue(new TextEncoder().encode('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","item_id":"cancel_mock","content_index":0,"output_index":0,"delta":"Synthetic stream awaiting cancellation"}\n\n'));
+     init.signal.addEventListener('abort',()=>controller.error(init.signal.reason),{once:true});
+   }}),{headers:{'Content-Type':'text/event-stream'}});
  const output=[{type:'message',id:'msg_mock',role:'assistant',status:'completed',content:[{type:'output_text',text:'Synthetic response. No external inference.',annotations:[]}]}];
  const events=[{type:'response.output_text.delta',item_id:'msg_mock',content_index:0,output_index:0,delta:'Synthetic response. No external inference.'},{type:'response.completed',response:{id:'resp_mock',status:'completed',output}}];
  return new Response(events.map(x=>`event: ${x.type}\ndata: ${JSON.stringify(x)}\n\n`).join(''),{headers:{'Content-Type':'text/event-stream'}});
