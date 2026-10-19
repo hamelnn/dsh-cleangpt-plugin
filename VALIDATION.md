@@ -2,9 +2,9 @@
 
 基线：Linux、Node 24.19.0、npm 11.9.0、DSH/dsh-llm 0.2.1-rc.2（源码参照 687f282e8625c6b8d11ff58211a90524be2e4317），Cordis 4.0.5、OpenAI SDK 7.19.0、jose 6.2.12。精确依赖见 package-lock.json。
 
-`npm test` 运行严格 TypeScript、预编译浏览器 bundle 构建和 52 项测试。保留原 44 项协议/工具/reasoning replay/OAuth/刷新安全回归，新增真实 loopback 取消及迟到回调拒绝、脱敏状态、重复授权和取消、失败重试、A/B 持久化、写盘失败、会话/fork 默认、请求冻结及 SDK wire 参数断言。全部使用合成账号、临时目录和响应，无真实登录或额度调用。
+`npm test` 运行严格 TypeScript、预编译浏览器 bundle 构建和 53 项测试。保留原 44 项协议/工具/reasoning replay/OAuth/刷新安全回归，新增真实 loopback 取消及迟到回调拒绝、脱敏状态、重复授权和取消、失败重试、A/B 持久化、写盘失败、会话/fork 默认、请求冻结及 SDK wire 参数断言。全部使用合成账号、临时目录和响应，无真实登录或额度调用。
 
-`npm run test:ui` 先打 tgz，通过官方 dsh plugin CLI 在临时 DSH_HOME 全新安装 bundle，再启动真实 DSH web 与系统 Chromium/Playwright。实际页面验证 Models 状态和取消/重新授权 UI（浏览器层合成回调）、原生模型/effort 选择器与并列 session speed、真实 DSH 主循环发出合成请求、high+priority / low+default 精确参数、A/B 切换、刷新恢复、生成中取消后继续发消息、写入失败不更新选中值、无页面脚本错误。脚本还完整重启 Host，并用全新浏览器验证两会话的 effort/speed 恢复。OAuth UI 点击由浏览器截获，不访问真实授权服务；Host 登录取消另有真实 loopback 测试。
+`npm run test:ui` 先打 tgz，通过官方 dsh plugin CLI 在临时 DSH_HOME 全新安装 bundle，再启动真实 DSH web 与系统 Chromium/Playwright。实际页面验证 Models 状态和取消/重新授权 UI（浏览器层合成回调）、原生模型/effort 选择器与并列 session speed、真实 DSH 主循环发出合成请求、high+priority / low+default 精确参数、按钮与原生模型控件的高度/字号/行高/内边距一致、菜单键盘关闭、同会话两页面双向同步并从两页发出匹配的 tier、断线重连及迟到保存响应保护、A/B 切换、刷新恢复、生成中取消后继续发消息、写入失败不更新选中值、无页面脚本错误。脚本还完整重启 Host，并用全新浏览器验证两会话的 effort/speed 恢复。OAuth UI 点击由浏览器截获，不访问真实授权服务；Host 登录取消另有真实 loopback 测试。
 
 生产实现 4 文件，未修改 DSH 主循环或工具。npm 包含已编译 Host/client、源码、测试、构建脚本、bundle 与安装文档；不包含账号、node_modules、缓存或个人 profile。源码 zip 包含锁文件，可重建。
 

@@ -12,13 +12,13 @@ try {
  await group.waitFor();if(await group.getAttribute('aria-expanded')==='false')await group.click();
  await page.getByRole('treeitem').filter({hasText:'Session A'}).click();
  await page.getByRole('button',{name:/reasoning effort high/}).waitFor();
- const speed=page.getByRole('combobox',{name:'ChatGPT speed'});
- await page.waitForFunction(()=>document.querySelector('[aria-label="ChatGPT speed"]')?.value==='priority');
- assert.equal(await speed.inputValue(),'priority');
+ const speed=page.getByRole('button',{name:/^ChatGPT speed:/});
+ await page.waitForFunction(()=>document.querySelector('[data-cleangpt-speed]')?.getAttribute('data-cleangpt-speed')==='priority');
+ assert.equal(await speed.getAttribute('data-cleangpt-speed'),'priority');
  await page.getByRole('treeitem').filter({hasText:'Session B'}).click();
  await page.getByRole('button',{name:/reasoning effort low/}).waitFor();
- await page.waitForFunction(()=>document.querySelector('[aria-label="ChatGPT speed"]')?.value==='default');
- assert.equal(await speed.inputValue(),'default');
+ await page.waitForFunction(()=>document.querySelector('[data-cleangpt-speed]')?.getAttribute('data-cleangpt-speed')==='default');
+ assert.equal(await speed.getAttribute('data-cleangpt-speed'),'default');
  await page.screenshot({path:`${process.env.DSH_TEST_ARTIFACTS}/host-restart-restored.png`});
  console.log('PASS: Host restart and fresh browser preserve A/B native effort and speed');
 } finally {await browser.close();}

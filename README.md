@@ -71,7 +71,7 @@ config:
   reasoningEfforts: [low, medium, high]
 ```
 
-speed 由 Host 的 cleangpt storage domain 以 sessionId 为键持久化，成功落盘后 UI 才更新。A/B 会话互不影响；切回、刷新和重启恢复同一会话的值，新会话和 fork 默认 Auto，不自动继承。无 sessionId 的辅助调用也明确使用 Auto。一次请求及同 turn/step 的内部重试冻结首次档位，用户切换影响后续新请求。取消不会自动重发任务，之后仍可继续发消息；插件不回滚工具的外部副作用。effort 的保存和恢复完全由 DSH 原生会话选择机制承担。
+speed 使用 DSH 自带紧凑按钮/菜单，与原生模型/effort 控件同高。Host 的 cleangpt storage domain 以 sessionId 为键持久化，成功落盘后 UI 才更新。同会话的多个 tab 通过 Host 持久化变更通知同步；断线重连重新读取，旧会话/旧读取及迟到保存响应不会覆盖较新状态。A/B 会话互不影响；切回、刷新和重启恢复同一会话的值，新会话和 fork 默认 Auto，不自动继承。无 sessionId 的辅助调用也明确使用 Auto。一次请求及同 turn/step 的内部重试冻结首次档位，用户切换影响后续新请求。取消不会自动重发任务，之后仍可继续发消息；插件不回滚工具的外部副作用。effort 的保存和恢复完全由 DSH 原生会话选择机制承担。
 
 ## 协议、错误与数据处理
 

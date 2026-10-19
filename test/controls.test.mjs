@@ -75,3 +75,15 @@ test('retry chain freezes speed, next step reads new value, cancellation/new tur
  await snapshots.capture('A',1,1,turn.signal);assert.equal(await snapshots.read('A',turn.signal),'auto');
  turn.abort();const resumed=new AbortController();speed='default';await snapshots.capture('A',2,0,resumed.signal);assert.equal(await snapshots.read('A',resumed.signal),'default');
 });
+
+test('speed long poll sends durable same-session updates, isolates other sessions and cancels pending reads',async()=>{
+ const h=await harness();try{
+  const c=new Controls(h.ctx,{authDir:h.root,account:'mock'},Promise.resolve(h.domain.table('sessions')));
+  const abort=new AbortController(),initial=await c.watchSpeed('A','',abort.signal);
+  assert.equal(initial.speed,'auto');let delivered=false;
+  const next=c.watchSpeed('A',initial.revision,abort.signal).then(view=>{delivered=true;return view;});
+  await c.setSpeed('B','default');await new Promise(r=>setImmediate(r));assert.equal(delivered,false);
+  await c.setSpeed('A','priority');const view=await next;assert.equal(view.speed,'priority');assert.notEqual(view.revision,initial.revision);
+  const pending=c.watchSpeed('A',view.revision,abort.signal);abort.abort();await assert.rejects(pending);
+ }finally{await h.close();}
+});

@@ -9,6 +9,7 @@ import { credentialStatus, login } from './auth.js';
 
 export const speedSchema = z.enum(['auto', 'default', 'priority']);
 export type Speed = z.infer<typeof speedSchema>;
+export interface SpeedView { speed: Speed; revision: string; }
 export const sessionDomain = defineDomain({ name: 'cleangpt', version: 1,
   tables: { sessions: domainTable(z.object({ speed: speedSchema })) } });
 export interface SafeStatus { account: string; signedIn: boolean; permission: boolean; renewalUncertain: boolean;
@@ -32,13 +33,17 @@ export class RequestSpeeds {
 
 /** One controller per plugin instance, never accepts credential paths or account labels from the browser. */
 export class Controls extends TypertRemoteService {
+  private speedRevision = randomUUID();
+  private readonly owner: Context;
   private active?: { id: string; abort: AbortController; done: Promise<void> };
   private phase: SafeStatus['phase'] = 'idle';
   constructor(ctx: Context, private readonly config: { authDir: string; account: string },
     private readonly sessions: Promise<SessionPreferences>,
     private readonly signIn: typeof login = login) {
     super(ctx, 'cleangptControls', { namespace: 'cleangpt' });
+    this.owner = ctx;
     ctx.effect(() => () => this.dispose());
+    ctx.on('domain/changed', change => { if (change.domain === sessionDomain.name) this.speedRevision = randomUUID(); });
   }
   @Remote
   async status(): Promise<SafeStatus> {
@@ -79,6 +84,25 @@ export class Controls extends TypertRemoteService {
   async getSpeed(sessionId: string): Promise<Speed> {
     z.string().min(1).max(256).parse(sessionId);
     return (await this.sessions).get(sessionId)?.speed ?? 'auto';
+  }
+  /** Reconnect-safe long poll: initial snapshot, then durable changes or a bounded heartbeat. */
+  @Remote
+  async watchSpeed(sessionId: string, after: string, signal: AbortSignal): Promise<SpeedView> {
+    z.string().min(1).max(256).parse(sessionId); z.string().max(64).parse(after);
+    const sessions = await this.sessions; signal.throwIfAborted();
+    if (after === this.speedRevision) await new Promise<void>((resolve, reject) => {
+      const cleanup = () => { stop(); clearTimeout(timer); signal.removeEventListener('abort', abort); };
+      const wake = () => { cleanup(); resolve(); };
+      const abort = () => { cleanup(); reject(signal.reason); };
+      const stop = this.owner.on('domain/changed', change => {
+        if (change.domain === sessionDomain.name && change.table === 'sessions' && change.key === sessionId) wake();
+      });
+      const timer = globalThis.setTimeout(wake, 15_000);
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort(); else if (after !== this.speedRevision) wake();
+    });
+    signal.throwIfAborted();
+    return { speed: sessions.get(sessionId)?.speed ?? 'auto', revision: this.speedRevision };
   }
   @Remote
   async setSpeed(sessionId: string, speed: Speed): Promise<Speed> {
