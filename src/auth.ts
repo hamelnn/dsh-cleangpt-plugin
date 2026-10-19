@@ -18,6 +18,12 @@ const SCOPE = 'openid profile email offline_access resource.invoke chatgpt.token
 const APP = 'dsh-cleangpt-plugin';
 /** Authentication failures stop inference without exposing token values. */
 export class AuthError extends Error { readonly code = 'AUTH'; }
+/** Display-safe local credential projection; this does not establish server entitlement. */
+export async function credentialStatus(dir = defaultDirectory, account = 'default') {
+  const session = await readSession(accountPath(dir, account));
+  return { account, signedIn: !!session?.access_token && !!session.refresh_token,
+    permission: hasPermission(session?.scope), renewalUncertain: session?.refresh_pending === true };
+}
 interface Session {
   client_id: string; subject?: string; email?: string; issuer?: string;
   access_token?: string; refresh_token?: string; id_token?: string;
@@ -196,11 +202,13 @@ export async function login(dir = defaultDirectory, account = 'default', signal 
       const child = spawn(browser[0], browser.slice(1), { stdio: 'ignore' });
       child.on('error', reject); child.on('exit', code => { if (code !== 0) reject(new Error('Cannot open the system browser')); });
       const registration = await result;
+      signal.throwIfAborted();
       // Retain issued mapping even if code exchange fails; do not register again blindly.
       await write(file, { ...previous, client_id: registration.client_id });
       const tokens = await postToken(endpoints.token, { grant_type: 'authorization_code', client_id: registration.client_id, code: registration.code, code_verifier: transaction.verifier, redirect_uri: redirect, resource: RESOURCE }, signal);
       if (!tokens.id_token) return fail('Missing OpenAI ID token');
       const payload = await verifyIdentity(tokens.id_token, registration.client_id, transaction.nonce, previous?.subject, createRemoteJWKSet(new URL(endpoints.jwks)));
+      signal.throwIfAborted();
       await write(file, { client_id: registration.client_id, subject: payload.sub, issuer: ISSUER, email: typeof payload.email === 'string' ? payload.email : undefined, ...tokens, expires_at: Date.now() + tokens.expires_in * 1000 });
       console.log(hasPermission(tokens.scope) ? `Signed in: ${account}; ChatGPT plan usage enabled.` : `Signed in: ${account}; plan usage disabled (consent missing).`);
     } finally { signal.removeEventListener('abort', onAbort); server.closeAllConnections(); if (server.listening) await new Promise<void>(yes => server.close(() => yes())); }

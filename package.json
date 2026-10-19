@@ -6,7 +6,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./dist/index.js",
+    "./client": "./dist/client.js"
   },
   "bin": {
     "dsh-cleangpt-plugin": "dist/auth.js"
@@ -20,27 +21,46 @@
     "example.cordis.patch.yml",
     "VALIDATION.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "scripts",
+    "cordis.patch.yml"
   ],
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "build": "tsc",
-    "test": "npm run build && node --test test/*.test.mjs"
+    "build": "tsc && node scripts/build-client.mjs",
+    "test": "npm run build && node --test --test-timeout=20000 test/*.test.mjs",
+    "test:ui": "npm run build && node scripts/test-ui.mjs"
   },
   "dependencies": {
+    "jose": "6.2.12",
     "openai": "7.19.0",
-    "jose": "6.2.12"
+    "zod": "4.4.3"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-agent": "0.2.1-rc.2",
     "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-storage-domain": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.1-rc.2",
     "@deepseek-ai/schemastery": "~3.18.5"
   },
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "@types/node": "^24.0.0"
+    "@deepseek-ai/dsh-client-connection": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-renderer": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings-models": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.2.1-rc.2",
+    "@deepseek-ai/dsh-storage-json": "^0.2.1-rc.2",
+    "@types/node": "^24.0.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "esbuild": "^0.28.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.9.3"
   },
   "license": "MIT",
   "repository": {
@@ -50,5 +70,16 @@
   "homepage": "https://github.com/hamelnn/dsh-cleangpt-plugin#readme",
   "bugs": {
     "url": "https://github.com/hamelnn/dsh-cleangpt-plugin/issues"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection"
+      ]
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
   }
 }

@@ -4,17 +4,18 @@ import type { ResponseCreateParamsStreaming, ResponseInput, ResponseOutputItem }
 import { LlmAdapter, LlmError, ToolCallId, ProviderRequestId, attributionHeaders, projectToolUpdates, ReasoningEffortId, resolveRetryPolicy } from '@deepseek-ai/dsh-llm';
 import type { GenerateOptions, StreamChunk, ContentBlock, LlmModelInfo } from '@deepseek-ai/dsh-llm';
 import type { Context } from '@deepseek-ai/cordis';
+import type {} from '@deepseek-ai/dsh-agent';
 import z from '@deepseek-ai/schemastery';
 import { accessToken, defaultDirectory, AuthError } from './auth.js';
+import { Controls, RequestSpeeds, sessionDomain } from './controls.js';
 
 export const name = 'dsh-cleangpt-plugin';
-export const inject = ['llm'];
-export interface Config { account: string; authDir: string; reasoningEffort: string; serviceTier: string; reasoningEfforts: string[]; allowUncappedAuxiliary: boolean }
+export const inject = ['llm', 'storageDomain'];
+export interface Config { account: string; authDir: string; reasoningEffort: string; reasoningEfforts: string[]; allowUncappedAuxiliary: boolean }
 export const Config = z.object({
   account: z.string().default('default'),
   authDir: z.string().default(defaultDirectory),
   reasoningEffort: z.string().default(''),
-  serviceTier: z.string().default(''),
   reasoningEfforts: z.array(z.string()).default([]),
   allowUncappedAuxiliary: z.boolean().default(false),
 });
@@ -23,6 +24,7 @@ interface Options {
   allowUncappedAuxiliary?: boolean; onWarning?: (message: string) => void;
   token?: (signal?: AbortSignal) => Promise<string>;
   fetch?: typeof globalThis.fetch;
+  sessionSpeed?: (sessionId: string, signal?: AbortSignal) => Promise<string>;
 }
 const ROUTE = 'chatgpt-plan';
 const NAMESPACE = 'dsh';
@@ -86,6 +88,7 @@ function usageChunk(usage: NonNullable<import('openai/resources/responses/respon
 
 /** Official SDK handles SSE parsing; this layer maps events to DSH chunks. */
 export class ChatGPTPlanAdapter extends LlmAdapter {
+  private readonly requestSpeeds = new WeakMap<object, Promise<string>>();
   constructor(private readonly config: Options = {}) { super(); }
   providerInfo(provider: string) { return { id: provider, name: `dsh-cleangpt-plugin (${this.config.account ?? 'default'})` }; }
   private async client(signal?: AbortSignal) {
@@ -109,7 +112,14 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
     return { provider, id: model, name: model, inputModalities: ['text'] as const, ...(efforts.length ? { reasoning: { efforts: efforts.map(id => ({ id: ReasoningEffortId(id), name: `${id} (server validates)` })), ...(this.config.reasoningEffort ? { defaultEffort: ReasoningEffortId(this.config.reasoningEffort) } : {}) } } : {}) };
   }
   async *stream(options: GenerateOptions): AsyncGenerator<StreamChunk> {
-    const body = requestBody(options, this.config);
+    options.signal?.throwIfAborted();
+    // Freeze once before credential lookup/network I/O; never re-read during the request.
+    let speed = this.requestSpeeds.get(options);
+    if (!speed) {
+      speed = options.sessionId && this.config.sessionSpeed ? this.config.sessionSpeed(options.sessionId, options.signal) : Promise.resolve('auto');
+      this.requestSpeeds.set(options, speed);
+    }
+    const body = requestBody(options, { ...this.config, serviceTier: await speed });
     const controller = new AbortController();
     const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
     let requestId: string | undefined;
@@ -188,6 +198,18 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
 
 /** Mount only a model route, with reversible Cordis ownership. */
 export function apply(ctx: Context, config: Config): void {
-  const adapter = new ChatGPTPlanAdapter({ ...config, onWarning: message => ctx.logger(name).warn(message) });
+  const domain = ctx.storageDomain.open(sessionDomain);
+  ctx.effect(() => async () => { await (await domain).close(); });
+  const sessions = domain.then(domain => domain.table('sessions'));
+  sessions.catch(error => ctx.logger(name).error('Cannot open session speed storage: %s', error instanceof Error ? error.message : 'storage failure'));
+  ctx.plugin(scope => { new Controls(scope, config, sessions); });
+  const requests = new RequestSpeeds(sessions);
+  ctx.on('agent/request', async ({ agent, turn, step, signal }, next) => {
+    await requests.capture(agent.session.id, turn, step, signal);
+    return next();
+  });
+  const adapter = new ChatGPTPlanAdapter({ ...config, sessionSpeed: async (id, signal) =>
+    requests.read(id, signal),
+    onWarning: message => ctx.logger(name).warn(message) });
   ctx.effect(() => ctx.llm.registerAdapter([ROUTE], adapter));
 }

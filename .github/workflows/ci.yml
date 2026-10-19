@@ -17,3 +17,12 @@ jobs:
       - run: npm ci --ignore-scripts --registry=https://registry.npmjs.org
       - run: npm test
       - run: npm pack --ignore-scripts
+      - name: Install isolated DSH browser regression runtime
+        run: npm install --prefix "$RUNNER_TEMP/dsh-runtime" --ignore-scripts --registry=https://registry.npmjs.org @deepseek-ai/dsh@0.2.1-rc.2 playwright@1.64.1 pnpm@11.19.0
+      - name: Install Chromium
+        run: node "$RUNNER_TEMP/dsh-runtime/node_modules/playwright/cli.js" install --with-deps chromium
+      - name: Packed clean install and synthetic native UI regression
+        env:
+          DSH_TEST_RUNTIME: ${{ runner.temp }}/dsh-runtime
+          DSH_TEST_ARTIFACTS: ${{ runner.temp }}/cleangpt-artifacts
+        run: npm run test:ui

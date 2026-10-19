@@ -2,6 +2,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Context } from '@deepseek-ai/cordis';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Storage from '@deepseek-ai/dsh-storage';
+import * as JsonStorage from '@deepseek-ai/dsh-storage-json';
+import * as DomainStorage from '@deepseek-ai/dsh-storage-domain';
 import LlmRuntime from '@deepseek-ai/dsh-llm';
 import { ChatGPTPlanAdapter, requestBody, apply } from '../dist/index.js';
 
@@ -88,11 +94,14 @@ test('dynamic account catalog preserves order and filters visibility without cla
 });
 test('Cordis native service registers and unloads only this route', async () => {
   const ctx = new Context(); ctx.plugin(LlmRuntime);
+  const directory = await mkdtemp(join(tmpdir(), 'cleangpt-domain-'));
+  await ctx.plugin(Storage); await ctx.plugin(JsonStorage, { root: directory });
+  await ctx.plugin(DomainStorage, { backend: 'json' });
   let ready; const mounted = new Promise(resolve => { ready = resolve; });
-  const fiber = ctx.plugin({ name: 'test-mount', inject: ['llm'], apply(c) { apply(c, { account: 'mock', authDir: '/unused', reasoningEffort: '', serviceTier: '', reasoningEfforts: [], allowUncappedAuxiliary: false }); ready(); } });
+  const fiber = ctx.plugin({ name: 'test-mount', inject: ['llm', 'storageDomain'], apply(c) { apply(c, { account: 'mock', authDir: '/unused', reasoningEffort: '', reasoningEfforts: [], allowUncappedAuxiliary: false }); ready(); } });
   await mounted;
   assert.equal(ctx.llm.listProviders().some(p => p.id === 'chatgpt-plan'), true);
-  await fiber.dispose(); assert.equal(ctx.llm.listProviders().some(p => p.id === 'chatgpt-plan'), false); await ctx.fiber.dispose();
+  await fiber.dispose(); assert.equal(ctx.llm.listProviders().some(p => p.id === 'chatgpt-plan'), false); await ctx.fiber.dispose(); await rm(directory, { recursive: true, force: true });
 });
 
 test('DSH prepares configured reasoning choices and records its default before dispatch', async () => {
@@ -129,7 +138,7 @@ test('completed response without content is an explicit error', async () => {
 test('published Schemastery defaults are plain plugin configuration', async () => {
   const plugin = await import('../dist/index.js');
   const config = plugin.Config({});
-  assert.equal(config.account, 'default'); assert.equal(config.serviceTier, ''); assert.deepEqual(config.reasoningEfforts, []);
+  assert.equal(config.account, 'default'); assert.equal('serviceTier' in config, false); assert.deepEqual(config.reasoningEfforts, []);
 });
 test('incomplete terminal events report available usage before failure', async () => {
   const chunks = [], incomplete = { ...done(), type: 'response.incomplete' };

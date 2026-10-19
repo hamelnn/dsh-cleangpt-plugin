@@ -132,3 +132,30 @@ test('host account label cannot overwrite global host metadata', async () => {
   try { await assert.rejects(accessToken(dir, 'host'), /reserved/); await assert.rejects(accessToken(dir, 'Host'), /reserved/); assert.equal(JSON.parse(await readFile(file, 'utf8')), 'urn:uuid:00000000-0000-4000-8000-000000000000'); }
   finally { await rm(dir, { recursive: true }); }
 });
+
+test('real loopback login with synthetic discovery/JWT retains PKCE, rejects late callbacks after cancellation', async () => {
+  const { login } = await import('../dist/auth.js');
+  const dir = await temporary(), bin = join(dir, 'bin'), launchFile = join(dir, 'launch');
+  await mkdir(bin);
+  await writeFile(join(bin, 'xdg-open'), `#!/bin/sh\nprintf '%s' "$1" > '${launchFile}'\n`, { mode: 0o700 });
+  const savedPath = process.env.PATH, originalFetch = globalThis.fetch;
+  process.env.PATH = `${bin}:${savedPath}`;
+  const controller = new AbortController();
+  globalThis.fetch = async (url, init) => String(url).startsWith(issuer)
+    ? Response.json(discovery) : originalFetch(url, init);
+  try {
+    const pending = login(dir, 'default', controller.signal);
+    let launch;
+    for (let i=0;i<100;i++) {
+      try { launch = new URL(await readFile(launchFile, 'utf8')); break; }
+      catch { await new Promise(r=>setTimeout(r, 10)); }
+    }
+    assert.ok(launch);assert.equal(launch.searchParams.get('code_challenge_method'),'S256');
+    const redirect = new URL(launch.searchParams.get('redirect_uri'));
+    redirect.search = new URLSearchParams({state:launch.searchParams.get('state'),code:'mock-code',client_id:'mock-issued'}).toString();
+    controller.abort(); await assert.rejects(pending);
+    await assert.rejects(originalFetch(redirect));
+    await assert.rejects(read(dir), {code:'ENOENT'});
+    assert.equal((await stat(dir)).mode & 0o077, 0);
+  } finally { process.env.PATH = savedPath; globalThis.fetch = originalFetch; await rm(dir,{recursive:true,force:true}); }
+});
