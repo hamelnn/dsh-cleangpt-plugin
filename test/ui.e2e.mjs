@@ -15,7 +15,7 @@ const effort=async level=>{
  await page.getByRole('button',{name:/Select model/}).last().click();
  if(await page.getByRole('menuitem',{name:/^Model/}).count())await page.getByRole('menuitem',{name:/^Model/}).click();
  await page.getByText('Synthetic GPT',{exact:true}).last().click();
- await page.getByRole('button',{name:/Select model, current Synthetic GPT/}).click();await page.getByRole('menuitem',{name:/Effort/}).click();await page.getByRole('menuitemradio',{name:`${level} (server validates)`,exact:true}).click();
+ await page.getByRole('button',{name:/Select model, current Synthetic GPT, reasoning effort/}).and(page.locator('[aria-expanded="false"]')).click();await page.getByRole('menuitem',{name:/Effort/}).click();await page.getByRole('menuitemradio',{name:`${level} (server validates)`,exact:true}).click();
 };
 await speed.waitFor();await page.waitForTimeout(300);await selectSpeed('priority');await effort('high');
 await page.locator('[data-composer-input]').fill('Synthetic regression A seed');await page.getByRole('button',{name:'Send message',exact:true}).click();await page.getByText('Synthetic response. No external inference.',{exact:true}).last().waitFor();await page.waitForTimeout(800);const A=currentId;
