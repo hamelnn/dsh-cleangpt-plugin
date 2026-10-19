@@ -1,0 +1,54 @@
+{
+  "name": "dsh-cleangpt-plugin",
+  "version": "0.1.0",
+  "description": "Native DSH provider for officially authorized ChatGPT plan usage",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "bin": {
+    "dsh-cleangpt-plugin": "dist/auth.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "test",
+    "tsconfig.json",
+    "README.md",
+    "example.cordis.patch.yml",
+    "VALIDATION.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "openai": "7.19.0",
+    "jose": "6.2.12"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "~3.18.5"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^24.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hamelnn/dsh-cleangpt-plugin.git"
+  },
+  "homepage": "https://github.com/hamelnn/dsh-cleangpt-plugin#readme",
+  "bugs": {
+    "url": "https://github.com/hamelnn/dsh-cleangpt-plugin/issues"
+  }
+}

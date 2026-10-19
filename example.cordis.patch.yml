@@ -1,0 +1,16 @@
+# 安装包后手动加入目标 profile 的 cordis.patch.yml；本项目不会代为启用。
+- insert:
+    - id: dsh-cleangpt-plugin
+      name: dsh-cleangpt-plugin
+      config:
+        account: default
+        # 标题/自动压缩会请求 maxTokens，但订阅路由不能执行该上限。
+        # 只有接受辅助生成无此硬上限及逐次日志警告后，才改为 true。
+        allowUncappedAuxiliary: false
+        # 可选：必须为绝对路径，目录权限 0700，文件 0600。
+        # authDir: /absolute/private/config/dsh-cleangpt-plugin
+        # 默认不发送 reasoning / service_tier，采用服务端默认。
+        # reasoningEffort: high
+        # reasoningEfforts: [low, medium, high]
+        # serviceTier: fast
+        # 上述只是请求值示例；模型、账号、工作区可能拒绝。
