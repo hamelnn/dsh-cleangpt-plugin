@@ -7,9 +7,10 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { credentialStatus, login } from './auth.js';
 
-export const speedSchema = z.enum(['auto', 'default', 'priority']);
+export const defaultServiceTiers = ['auto', 'default', 'fast', 'ultrafast', 'priority', 'flex', 'scale'];
+export const speedSchema = z.string().min(1);
 export type Speed = z.infer<typeof speedSchema>;
-export interface SpeedView { speed: Speed; revision: string; }
+export interface SpeedView { speed: Speed; revision: string; choices: string[]; }
 export const sessionDomain = defineDomain({ name: 'cleangpt', version: 1,
   tables: { sessions: domainTable(z.object({ speed: speedSchema })) } });
 export interface SafeStatus { account: string; signedIn: boolean; permission: boolean; renewalUncertain: boolean;
@@ -37,13 +38,17 @@ export class Controls extends TypertRemoteService {
   private readonly owner: Context;
   private active?: { id: string; abort: AbortController; done: Promise<void> };
   private phase: SafeStatus['phase'] = 'idle';
-  constructor(ctx: Context, private readonly config: { authDir: string; account: string },
+  constructor(ctx: Context, private readonly config: { authDir: string; account: string; serviceTiers?: string[]; serviceTier?: string },
     private readonly sessions: Promise<SessionPreferences>,
     private readonly signIn: typeof login = login) {
     super(ctx, 'cleangptControls', { namespace: 'cleangpt' });
     this.owner = ctx;
+    this.choices().forEach(value => speedSchema.parse(value));
     ctx.effect(() => () => this.dispose());
     ctx.on('domain/changed', change => { if (change.domain === sessionDomain.name) this.speedRevision = randomUUID(); });
+  }
+  private choices(current?: string): string[] {
+    return [...new Set(['auto', ...(this.config.serviceTiers ?? defaultServiceTiers), ...(this.config.serviceTier ? [this.config.serviceTier] : []), ...(current ? [current] : [])])];
   }
   @Remote
   async status(): Promise<SafeStatus> {
@@ -102,12 +107,15 @@ export class Controls extends TypertRemoteService {
       if (signal.aborted) abort(); else if (after !== this.speedRevision) wake();
     });
     signal.throwIfAborted();
-    return { speed: sessions.get(sessionId)?.speed ?? 'auto', revision: this.speedRevision };
+    const speed = sessions.get(sessionId)?.speed ?? 'auto';
+    return { speed, revision: this.speedRevision, choices: this.choices(speed) };
   }
   @Remote
   async setSpeed(sessionId: string, speed: Speed): Promise<Speed> {
     z.string().min(1).max(256).parse(sessionId); speedSchema.parse(speed);
-    await (await this.sessions).put(sessionId, { speed });
+    const sessions = await this.sessions;
+    if (!this.choices(sessions.get(sessionId)?.speed).includes(speed)) throw new Error('Speed candidate is not configured');
+    await sessions.put(sessionId, { speed });
     return speed;
   }
   async dispose(): Promise<void> { const active = this.active; active?.abort.abort(); await active?.done; }

@@ -138,7 +138,7 @@ test('completed response without content is an explicit error', async () => {
 test('published Schemastery defaults are plain plugin configuration', async () => {
   const plugin = await import('../dist/index.js');
   const config = plugin.Config({});
-  assert.equal(config.account, 'default'); assert.equal('serviceTier' in config, false); assert.deepEqual(config.reasoningEfforts, []);
+  assert.equal(config.account, 'default'); assert.equal(config.serviceTier, ''); assert.deepEqual(config.reasoningEfforts, ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 });
 test('incomplete terminal events report available usage before failure', async () => {
   const chunks = [], incomplete = { ...done(), type: 'response.incomplete' };

@@ -44,6 +44,7 @@ export function AccountPanel({ rpc }: { rpc: Rpc }) {
   </section>;
 }
 export function SpeedSelect({ rpc, sessionId, subscribeReset }: { rpc: Rpc; sessionId: string; subscribeReset: (listener: () => void) => () => void }) {
+  const [choices, setChoices] = useState<string[]>([]);
   const [open, setOpen] = useState(false), [reload, setReload] = useState(0);
   const [speed, setSpeed] = useState<Speed>(), [busy, setBusy] = useState(false), [error, setError] = useState(false), [offline, setOffline] = useState(false);
   const lifetime = useRef(0);
@@ -62,7 +63,7 @@ export function SpeedSelect({ rpc, sessionId, subscribeReset }: { rpc: Rpc; sess
         try {
           const view = await rpc<SpeedView>('watchSpeed', [sessionId, revision], controller.signal);
           if (!active || generation !== lifetime.current) return;
-          revision = view.revision; setSpeed(view.speed); setOffline(false);
+          revision = view.revision; setChoices(view.choices); setSpeed(view.speed); setOffline(false);
         } catch {
           if (!active) return;
           setSpeed(undefined); setOffline(true); revision = '';
@@ -72,16 +73,17 @@ export function SpeedSelect({ rpc, sessionId, subscribeReset }: { rpc: Rpc; sess
     })();
     return () => { active = false; controller.abort(); };
   }, [rpc, sessionId, reload]);
-  const labels = { auto: 'Auto', default: 'Standard', priority: 'Fast' };
+  const labels = new Map([['auto', 'Auto'], ['default', 'Standard'], ['fast', 'Fast'], ['ultrafast', 'Ultrafast'], ['priority', 'Priority'], ['flex', 'Flex'], ['scale', 'Scale']]);
+  const label = (id: string) => labels.get(id) ?? id;
   return <span>
     <Menu open={open} portal compact side="top" selectedId={speed} onClose={() => setOpen(false)}
-      items={Object.entries(labels).map(([id, label]) => ({ id, label, disabled: busy || speed === undefined }))}
-      anchor={<Button variant="ghost" size="sm" aria-label={`ChatGPT speed: ${speed ? labels[speed] : 'Loading'}`}
+      items={choices.map(id => ({ id, label: id === 'auto' ? label(id) : `${label(id)} (server validates)`, disabled: busy || speed === undefined }))}
+      anchor={<Button variant="ghost" size="sm" aria-label={`ChatGPT speed: ${speed ? label(speed) : 'Loading'}`}
         aria-haspopup="menu" aria-expanded={open} aria-busy={busy} data-cleangpt-speed={speed ?? ''}
         disabled={busy || speed === undefined} onClick={() => setOpen(value => !value)}
         title="Candidate transport preference; OpenAI validates availability. Applies to the next request in this conversation."
         style={{height:28,fontSize:13,lineHeight:'20px',fontWeight:400,padding:'0 4px 0 8px',color:'var(--dsw-alias-label-secondary)'}}>
-        Speed {speed ? labels[speed] : '…'}<IconChevronDownOutlineRegular size={12} />
+        Speed {speed ? label(speed) : '…'}<IconChevronDownOutlineRegular size={12} />
       </Button>}
       onSelect={async id => {
         setOpen(false); setBusy(true); setError(false);

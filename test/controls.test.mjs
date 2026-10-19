@@ -87,3 +87,26 @@ test('speed long poll sends durable same-session updates, isolates other session
   const pending=c.watchSpeed('A',view.revision,abort.signal);abort.abort();await assert.rejects(pending);
  }finally{await h.close();}
 });
+
+test('installed bundle exposes all public efforts and tiers; each pair and configured future values reach SDK unchanged',async()=>{
+ const {readFile}=await import('node:fs/promises');const {Config}=await import('../dist/index.js');
+ const patch=await readFile(new URL('../cordis.patch.yml',import.meta.url),'utf8');
+ const values=key=>patch.match(new RegExp(`${key}: \\[([^\\]]+)\\]`))[1].split(',').map(x=>x.trim());
+ const efforts=['none','minimal','low','medium','high','xhigh','max'];const tiers=['auto','default','fast','ultrafast','priority','flex','scale'];
+ assert.deepEqual(values('reasoningEfforts'),efforts);assert.deepEqual(values('serviceTiers'),tiers);
+ const config=Config({serviceTier:'legacy-tier'});assert.deepEqual(config.reasoningEfforts,efforts);assert.deepEqual(config.serviceTiers,tiers);
+ const h=await harness();try{
+  const c=new Controls(h.ctx,{authDir:h.root,account:'mock',serviceTiers:[...tiers,'future-tier'],serviceTier:config.serviceTier},Promise.resolve(h.domain.table('sessions')));
+  const sent=[];const a=new ChatGPTPlanAdapter({reasoningEfforts:[...efforts,'future-effort'],sessionSpeed:id=>c.getSpeed(id),token:async()=> 'mock-token',fetch:async(_u,init)=>{sent.push(JSON.parse(init.body));return new Response('event: error\ndata: {"type":"error","code":"mock-stop"}\n\n',{headers:{'Content-Type':'text/event-stream'}});}});
+  const model=await a.resolveModel('chatgpt-plan','mock-model');assert.deepEqual(model.reasoning.efforts.map(x=>x.id),[...efforts,'future-effort']);assert.ok(model.reasoning.efforts.every(x=>x.name.endsWith('(server validates)')));
+  for(const tier of [...tiers,'future-tier','legacy-tier'])for(const effort of [...efforts,'future-effort']){
+   await c.setSpeed('A',tier);await assert.rejects(Array.fromAsync(a.stream({sessionId:'A',provider:'chatgpt-plan',model:'mock-model',reasoningEffort:effort,messages:[]})));
+   assert.equal(sent.at(-1).service_tier,tier);assert.equal(sent.at(-1).reasoning.effort,effort);
+  }
+  const view=await c.watchSpeed('A','',new AbortController().signal);assert.ok(view.choices.includes('future-tier'));assert.ok(view.choices.includes('legacy-tier'));
+ }finally{await h.close();}
+});
+test('unsupported configured tier returns the server parameter error without fallback',async()=>{
+ let calls=0;const a=new ChatGPTPlanAdapter({sessionSpeed:async()=> 'future-denied-tier',token:async()=> 'mock-token',fetch:async(_u,init)=>{calls++;assert.equal(JSON.parse(init.body).service_tier,'future-denied-tier');return Response.json({error:{code:'unsupported_capability',param:'service_tier',message:'Synthetic unsupported tier'}},{status:400});}});
+ await assert.rejects(Array.fromAsync(a.stream({sessionId:'A',provider:'chatgpt-plan',model:'mock-model',messages:[]})),error=>error.failure.status===400&&error.cause.param==='service_tier'&&/unsupported_capability/.test(error.message));assert.equal(calls,1);
+});

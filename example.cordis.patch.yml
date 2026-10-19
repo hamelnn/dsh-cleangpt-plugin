@@ -9,5 +9,7 @@
     # authDir: /absolute/private/config/dsh-cleangpt-plugin
     # 默认不发送 reasoning，采用服务端默认。
     # reasoningEffort: high
-    # reasoningEfforts: [low, medium, high]
+    reasoningEfforts: [none, minimal, low, medium, high, xhigh, max]
+    serviceTiers: [auto, default, fast, ultrafast, priority, flex, scale]
+    # serviceTier: future-tier  # 加入同一个菜单候选，不修改默认 Auto
     # 上述只是请求值示例；模型、账号、工作区可能拒绝。

@@ -16,7 +16,10 @@ const run=(command,args)=>new Promise((yes,no)=>{const child=spawn(command,args,
 await run('npm',['pack','--ignore-scripts']);
 await run(process.execPath,[cli,'plugin','--profile','web','add','--ignore-scripts','--registry=https://registry.npmjs.org',join(repo,'dsh-cleangpt-plugin-0.1.0.tgz')]);
 await writeFile(join(root,'auth/default.json'),JSON.stringify({client_id:'mock-client',access_token:'mock-access',refresh_token:'mock-refresh',scope:'chatgpt.tokens.use.direct',expires_at:Date.now()+86400000}),{mode:0o600});
-await writeFile(join(root,'home/profiles/web/cordis.patch.yml'),`- id: dsh-cleangpt-plugin\n  config:\n    account: default\n    authDir: ${join(root,'auth')}\n    reasoningEfforts: [low, medium, high]\n    allowUncappedAuxiliary: true\n`);
+const { Config } = await import(join(repo,'dist/index.js'));
+const config=Config({authDir:join(root,'auth'),allowUncappedAuxiliary:true});
+config.reasoningEfforts=[...config.reasoningEfforts,'mock-future-effort'];config.serviceTiers=[...config.serviceTiers,'mock-future-tier'];config.serviceTier='mock-legacy-tier';
+await writeFile(join(root,'home/profiles/web/cordis.patch.yml'),JSON.stringify([{id:'dsh-cleangpt-plugin',config}]));
 await writeFile(join(root,'picker.yml'),'- id: directory-picker\n  disabled: true\n- insert:\n    - id: directory-picker-browse\n      name: "@deepseek-ai/dsh-host-directory-picker-browse"\n    - id: ui-directory-picker-browse\n      name: "@deepseek-ai/dsh-client-ui-directory-picker-browse"\n');
 let server;
 const start=async()=>{

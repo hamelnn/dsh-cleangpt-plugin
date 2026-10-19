@@ -7,16 +7,18 @@ import type { Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-agent';
 import z from '@deepseek-ai/schemastery';
 import { accessToken, defaultDirectory, AuthError } from './auth.js';
-import { Controls, RequestSpeeds, sessionDomain } from './controls.js';
+import { Controls, RequestSpeeds, sessionDomain, defaultServiceTiers } from './controls.js';
 
 export const name = 'dsh-cleangpt-plugin';
 export const inject = ['llm', 'storageDomain'];
-export interface Config { account: string; authDir: string; reasoningEffort: string; reasoningEfforts: string[]; allowUncappedAuxiliary: boolean }
+export interface Config { account: string; authDir: string; reasoningEffort: string; reasoningEfforts: string[]; serviceTiers: string[]; serviceTier: string; allowUncappedAuxiliary: boolean }
 export const Config = z.object({
   account: z.string().default('default'),
   authDir: z.string().default(defaultDirectory),
   reasoningEffort: z.string().default(''),
-  reasoningEfforts: z.array(z.string()).default([]),
+  reasoningEfforts: z.array(z.string()).default(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']),
+  serviceTiers: z.array(z.string()).default(defaultServiceTiers),
+  serviceTier: z.string().default(''),
   allowUncappedAuxiliary: z.boolean().default(false),
 });
 interface Options {
