@@ -6,11 +6,15 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from 'jose';
 import { accessToken, exclusive, authorization, callback, verifyIdentity, login } from '../dist/auth.js';
+import { privateTemporary } from './private-temporary.mjs';
+import { beforePrivateRead } from '../dist/credential-files.js';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 
 const scope = 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct';
 const issuer = 'https://auth.openai.com';
 const previous = { client_id: 'oaiapp_mock', subject: 'sub_mock', id_token: 'mock-hint' };
-const temporary = async () => mkdtemp(join(tmpdir(), 'cleangpt-mock-test-'));
+const temporary = privateTemporary;
 const session = () => ({ ...previous, access_token: 'mock-old', refresh_token: 'mock-refresh-old', scope, expires_at: Date.now() - 1 });
 const seed = async (dir, value = session()) => writeFile(join(dir, 'default.json'), JSON.stringify(value), { mode: 0o600 });
 const read = dir => readFile(join(dir, 'default.json'), 'utf8').then(JSON.parse);
@@ -52,7 +56,9 @@ test('one refresh for concurrent callers, exact grant, atomic rotation, owner-on
   };
   try {
     assert.deepEqual(await Promise.all([accessToken(dir), accessToken(dir)]), ['mock-new', 'mock-new']); assert.equal(tokenCalls, 1);
-    const saved = await read(dir); assert.equal(saved.refresh_token, 'mock-rotated'); assert.equal(saved.refresh_pending, false); assert.equal(saved.scope, scope); assert.equal((await stat(join(dir, 'default.json'))).mode & 0o777, 0o600);
+    const saved = await read(dir); assert.equal(saved.refresh_token, 'mock-rotated'); assert.equal(saved.refresh_pending, false); assert.equal(saved.scope, scope);
+    if (process.platform === 'win32') await beforePrivateRead(join(dir, 'default.json'));
+    else assert.equal((await stat(join(dir, 'default.json'))).mode & 0o777, 0o600);
   } finally { globalThis.fetch = original; await rm(dir, { recursive: true }); }
 });
 test('uncertain renewal retains tokens and blocks replay after restart', async () => {
@@ -69,9 +75,11 @@ test('missing consent, invalid labels, unsafe storage and symlinks fail closed',
   try {
     await seed(dir, { ...session(), scope: 'openid', expires_at: Date.now() + 3600_000 });
     await assert.rejects(accessToken(dir), /permission/); await assert.rejects(accessToken(dir, '../other'), /label/);
-    await chmod(join(dir, 'default.json'), 0o644); await assert.rejects(accessToken(dir), /0600/);
-    await rm(join(dir, 'default.json')); await symlink('/dev/null', join(dir, 'default.json')); await assert.rejects(accessToken(dir));
-    await chmod(dir, 0o755); await assert.rejects(accessToken(dir), /0700/);
+    if (process.platform !== 'win32') {
+      await chmod(join(dir, 'default.json'), 0o644); await assert.rejects(accessToken(dir), /0600/);
+      await rm(join(dir, 'default.json')); await symlink('/dev/null', join(dir, 'default.json')); await assert.rejects(accessToken(dir));
+      await chmod(dir, 0o755); await assert.rejects(accessToken(dir), /0700/);
+    }
   } finally { await rm(dir, { recursive: true }); }
 });
 test('cross-process lock refuses concurrent writers and is released after failure', async () => {
@@ -140,7 +148,16 @@ async function withLoopbackLogin(dir, run) {
   for (const command of ['open', 'xdg-open']) {
     await writeFile(join(bin, command), `#!/bin/sh\nprintf '%s\\n%s\\n' "$0" "$1" > ${quotedLaunchFile}\n`, { mode: 0o700 });
   }
-  const savedPath = process.env.PATH, originalFetch = globalThis.fetch;
+  const savedPath = process.env.PATH, originalFetch = globalThis.fetch, originalSpawn = childProcess.spawn;
+  if (process.platform === 'win32') {
+    // Intercept only the browser launcher. Never invoke a real browser in tests.
+    childProcess.spawn = (command, args, options) => {
+      assert.equal(command, 'rundll32');
+      assert.equal(args[0], 'url.dll,FileProtocolHandler');
+      return originalSpawn(process.execPath, ['-e', 'require("node:fs").writeFileSync(process.argv[1], "rundll32\\n" + process.argv[2] + "\\n")', launchFile, args[1]], { ...options, windowsHide: true });
+    };
+    syncBuiltinESMExports();
+  }
   // Do not fall through to any real system browser, including macOS's open.
   process.env.PATH = bin;
   const controller = new AbortController();
@@ -153,13 +170,13 @@ async function withLoopbackLogin(dir, run) {
     pending = login(dir, 'default', controller.signal);
     pending.catch(() => {}); // Cleanup owns early rejection, even if the test body fails.
     await run({ pending, controller, waitForLaunch: async () => {
-      for (let i = 0; i < 200; i++) {
+      for (let i = 0; i < 1000; i++) {
         let captured;
         try { captured = await readFile(launchFile, 'utf8'); }
         catch (error) { if (error.code !== 'ENOENT') throw error; }
         const [command, url, complete] = captured?.split('\n') ?? [];
         if (command && url && complete === '') {
-          assert.equal(basename(command), process.platform === 'darwin' ? 'open' : 'xdg-open');
+          assert.equal(basename(command), process.platform === 'win32' ? 'rundll32' : process.platform === 'darwin' ? 'open' : 'xdg-open');
           return new URL(url);
         }
         await new Promise(resolve => setTimeout(resolve, 10));
@@ -171,6 +188,7 @@ async function withLoopbackLogin(dir, run) {
     await pending?.catch(() => {});
     if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
     globalThis.fetch = originalFetch;
+    childProcess.spawn = originalSpawn; syncBuiltinESMExports();
   }
 }
 
@@ -185,7 +203,7 @@ test('loopback login with synthetic discovery retains PKCE, rejects late callbac
       controller.abort(); await assert.rejects(pending);
       await assert.rejects(originalFetch(redirect));
       await assert.rejects(read(dir), { code: 'ENOENT' });
-      assert.equal((await stat(dir)).mode & 0o077, 0);
+      if (process.platform !== 'win32') assert.equal((await stat(dir)).mode & 0o077, 0);
     });
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

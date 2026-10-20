@@ -1,5 +1,8 @@
 /** Native DSH Responses provider. DSH retains its loop and executes all tools. */
 import OpenAI from 'openai';
+import { ProxyAgent } from 'undici';
+import { effortLabel } from './labels.js';
+import { normalizeProxy, NetworkSettings, networkDomain } from './network.js';
 import type { ResponseCreateParamsStreaming, ResponseInput, ResponseOutputItem } from 'openai/resources/responses/responses.js';
 import { LlmAdapter, LlmError, ToolCallId, ProviderRequestId, attributionHeaders, projectToolUpdates, ReasoningEffortId, resolveRetryPolicy } from '@deepseek-ai/dsh-llm';
 import type { GenerateOptions, StreamChunk, ContentBlock, LlmModelInfo } from '@deepseek-ai/dsh-llm';
@@ -11,10 +14,11 @@ import { Controls, RequestSpeeds, sessionDomain, defaultServiceTiers } from './c
 
 export const name = 'dsh-cleangpt-plugin';
 export const inject = ['llm', 'storageDomain'];
-export interface Config { account: string; authDir: string; reasoningEffort: string; reasoningEfforts: string[]; serviceTiers: string[]; serviceTier: string; allowUncappedAuxiliary: boolean }
+export interface Config { account: string; authDir: string; proxyUrl: string; reasoningEffort: string; reasoningEfforts: string[]; serviceTiers: string[]; serviceTier: string; allowUncappedAuxiliary: boolean }
 export const Config = z.object({
   account: z.string().default('default'),
   authDir: z.string().default(defaultDirectory),
+  proxyUrl: z.string().default(''),
   reasoningEffort: z.string().default(''),
   reasoningEfforts: z.array(z.string()).default(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']),
   serviceTiers: z.array(z.string()).default(defaultServiceTiers),
@@ -22,6 +26,8 @@ export const Config = z.object({
   allowUncappedAuxiliary: z.boolean().default(false),
 });
 interface Options {
+  proxyUrl?: string;
+  getProxyUrl?: () => Promise<string>;
   account?: string; authDir?: string; reasoningEffort?: string; serviceTier?: string; reasoningEfforts?: string[];
   allowUncappedAuxiliary?: boolean; onWarning?: (message: string) => void;
   token?: (signal?: AbortSignal) => Promise<string>;
@@ -71,8 +77,8 @@ export function requestBody(options: GenerateOptions, config: Options): Response
     model: options.model, input, store: false, stream: true,
     include: ['reasoning.encrypted_content'],
     ...(effort ? { reasoning: { effort: effort as NonNullable<ResponseCreateParamsStreaming['reasoning']>['effort'] } } : {}),
-    // Opaque configured values intentionally reach OpenAI unchanged, including future values.
-    ...(config.serviceTier ? { service_tier: config.serviceTier as ResponseCreateParamsStreaming['service_tier'] } : {}),
+    // Auto means server-selected routing. The plan endpoint rejects literal "auto".
+    ...(config.serviceTier && config.serviceTier !== 'auto' ? { service_tier: config.serviceTier as ResponseCreateParamsStreaming['service_tier'] } : {}),
     ...(projected.tools?.length ? { tools: [{ type: 'namespace', name: NAMESPACE, description: 'Tools executed by DeepSeek Harness', tools: projected.tools.map(tool => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.parameters, strict: false })) }] } : {}),
   };
 }
@@ -81,7 +87,9 @@ interface Replay { version: 1; output: ReplayItem[]; content: ContentBlock[] }
 function isReplay(value: unknown): value is { response: Replay } {
   if (typeof value !== 'object' || value === null || !('response' in value)) return false;
   value = value.response;
-  return typeof value === 'object' && value !== null && 'version' in value && value.version === 1 && 'output' in value && Array.isArray(value.output) && 'content' in value && Array.isArray(value.content);
+  // Older sessions may contain an empty native snapshot despite visible content.
+  // Fall back to that visible history instead of silently deleting the turn.
+  return typeof value === 'object' && value !== null && 'version' in value && value.version === 1 && 'output' in value && Array.isArray(value.output) && value.output.length > 0 && 'content' in value && Array.isArray(value.content);
 }
 
 function usageChunk(usage: NonNullable<import('openai/resources/responses/responses.js').Response['usage']>): StreamChunk {
@@ -91,14 +99,23 @@ function usageChunk(usage: NonNullable<import('openai/resources/responses/respon
 /** Official SDK handles SSE parsing; this layer maps events to DSH chunks. */
 export class ChatGPTPlanAdapter extends LlmAdapter {
   private readonly requestSpeeds = new WeakMap<object, Promise<string>>();
-  constructor(private readonly config: Options = {}) { super(); }
+  private readonly proxies = new Map<string, ProxyAgent>();
+  constructor(private readonly config: Options = {}) {
+    super();
+    if (config.proxyUrl) normalizeProxy(config.proxyUrl);
+  }
+  async dispose() { await Promise.all([...this.proxies.values()].map(proxy => proxy.close())); }
   providerInfo(provider: string) { return { id: provider, name: `dsh-cleangpt-plugin (${this.config.account ?? 'default'})` }; }
   private async client(signal?: AbortSignal) {
+    const proxyUrl = normalizeProxy(await this.config.getProxyUrl?.() ?? this.config.proxyUrl ?? '');
+    let proxy = this.proxies.get(proxyUrl);
+    if (proxyUrl && !proxy) { proxy = new ProxyAgent(proxyUrl); this.proxies.set(proxyUrl, proxy); }
     let token: string;
     try { token = await (this.config.token?.(signal) ?? accessToken(this.config.authDir, this.config.account, signal)); }
     catch (error) { if (error instanceof AuthError) throw new LlmError(error.message, error.code, { cause: error }); throw error; }
     return new OpenAI({ apiKey: token, baseURL: API, maxRetries: 0, timeout: 300_000,
-      fetch: this.config.fetch, organization: null, project: null, logLevel: 'off', fetchOptions: { redirect: 'error' }, defaultHeaders: attributionHeaders() });
+      fetch: proxy ? (input, init) => (this.config.fetch ?? globalThis.fetch)(input, { ...init, dispatcher: proxy } as RequestInit) : this.config.fetch,
+      organization: null, project: null, logLevel: 'off', fetchOptions: { redirect: 'error' }, defaultHeaders: attributionHeaders() });
   }
   async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const client = await this.client();
@@ -111,7 +128,7 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
     signal?.throwIfAborted();
     // Catalog membership does not establish entitlement; unknown slugs can reach the server.
     const efforts = [...new Set([...(this.config.reasoningEfforts ?? []), ...(this.config.reasoningEffort ? [this.config.reasoningEffort] : [])])];
-    return { provider, id: model, name: model, inputModalities: ['text'] as const, ...(efforts.length ? { reasoning: { efforts: efforts.map(id => ({ id: ReasoningEffortId(id), name: `${id} (server validates)` })), ...(this.config.reasoningEffort ? { defaultEffort: ReasoningEffortId(this.config.reasoningEffort) } : {}) } } : {}) };
+    return { provider, id: model, name: model, inputModalities: ['text'] as const, ...(efforts.length ? { reasoning: { efforts: efforts.map(id => ({ id: ReasoningEffortId(id), name: effortLabel(id) })), ...(this.config.reasoningEffort ? { defaultEffort: ReasoningEffortId(this.config.reasoningEffort) } : {}) } } : {}) };
   }
   async *stream(options: GenerateOptions): AsyncGenerator<StreamChunk> {
     options.signal?.throwIfAborted();
@@ -127,6 +144,8 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
     let requestId: string | undefined;
     const blocks = new Map<string, { index: number; block: ContentBlock }>();
     const toolIds = new Set<string>(), doneTools = new Set<string>();
+    const completedItems = new Map<number, ResponseOutputItem>();
+    const addedItems = new Set<string>();
     let index = 0, completed = false, hasTools = false;
     const begin = (key: string, block: ContentBlock): StreamChunk => {
       const entry = { index: index++, block }; blocks.set(key, entry);
@@ -140,6 +159,15 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
       requestId = result.request_id ?? undefined;
       for await (const event of result.data) {
         signal.throwIfAborted();
+        if (event.type === 'response.output_item.added') {
+          if (!event.item.id || addedItems.has(event.item.id)) throw new LlmError('Missing or duplicate output item ID', 'PROTOCOL');
+          addedItems.add(event.item.id);
+        }
+        if (event.type === 'response.output_item.done') {
+          if (!Number.isInteger(event.output_index) || event.output_index < 0) throw new LlmError('Invalid completed output index', 'PROTOCOL');
+          if (completedItems.has(event.output_index)) throw new LlmError('Duplicate completed output index', 'PROTOCOL');
+          completedItems.set(event.output_index, event.item);
+        }
         if (event.type === 'response.output_item.added' && event.item.type === 'function_call') {
           const item = event.item;
           if (!item.id || !item.call_id || blocks.has(item.id) || toolIds.has(item.call_id)) throw new LlmError('Missing or duplicate tool item/call ID', 'PROTOCOL');
@@ -164,7 +192,7 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
         } else if (event.type === 'response.output_item.done' && event.item.type === 'function_call') {
           const entry = blocks.get(event.item.id!);
           if (doneTools.has(event.item.id!)) throw new LlmError('Duplicate completed tool item', 'PROTOCOL');
-          if (!entry || entry.block.type !== 'tool-call' || entry.block.arguments !== event.item.arguments || entry.block.name !== event.item.name || entry.block.id !== event.item.call_id || event.item.namespace !== NAMESPACE)
+          if (event.item.status !== 'completed' || !entry || entry.block.type !== 'tool-call' || entry.block.arguments !== event.item.arguments || entry.block.name !== event.item.name || entry.block.id !== event.item.call_id || event.item.namespace !== NAMESPACE)
             throw new LlmError('Incomplete tool argument stream', 'PROTOCOL');
           doneTools.add(event.item.id!);
         } else if (event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete') {
@@ -175,24 +203,60 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
         } else if (event.type === 'response.completed') {
           if (event.response.status !== 'completed') throw new LlmError('Response status was not completed', 'PROTOCOL');
           if (blocks.size === 0) throw new LlmError('Response completed without content or tool calls', 'EMPTY_RESPONSE');
-          const finalTools = event.response.output.filter(item => item.type === 'function_call');
+          // Some plan streams omit the terminal output snapshot. Reconstruct only
+          // from complete item.done snapshots, preserving their original order.
+          const snapshots = [...completedItems.entries()].sort(([a], [b]) => a - b);
+          if (!event.response.output.length && (!snapshots.length || snapshots.some(([outputIndex], i) => outputIndex !== i))) throw new LlmError('Missing completed output snapshots', 'PROTOCOL');
+          const output = event.response.output.length ? event.response.output : snapshots.map(([, item]) => item);
+          if (!output.every((item): item is ReplayItem => ['message', 'reasoning', 'function_call'].includes(item.type))) throw new LlmError('Unsupported output item in Responses stream', 'UNSUPPORTED_CONTENT');
+          const outputIds = new Set(output.map(item => item.id));
+          if (outputIds.has(undefined) || outputIds.has('') || outputIds.size !== output.length || [...addedItems].some(id => !outputIds.has(id))) throw new LlmError('Missing or duplicate completed output item', 'PROTOCOL');
+          // Every visible delta must agree with the snapshot we will replay,
+          // including mixed text/tool responses and reasoning summaries.
+          const visible = new Map<string, { type: 'text' | 'reasoning'; text: string }>();
+          for (const item of output) {
+            if (item.type === 'message') {
+              if (item.status !== 'completed') throw new LlmError('Message item was not completed', 'PROTOCOL');
+              item.content.forEach((part, i) => visible.set(`${item.id}:t:${i}`, { type: 'text', text: part.type === 'refusal' ? part.refusal : part.text }));
+            } else if (item.type === 'reasoning') {
+              if (item.status !== undefined && item.status !== 'completed') throw new LlmError('Reasoning item was not completed', 'PROTOCOL');
+              item.summary.forEach((part, i) => visible.set(`${item.id}:r:${i}`, { type: 'reasoning', text: part.text }));
+            }
+          }
+          for (const [key, { block }] of blocks) {
+            if (block.type !== 'text' && block.type !== 'reasoning') continue;
+            const snapshot = visible.get(key);
+            if (!snapshot || snapshot.type !== block.type || snapshot.text !== block.text) throw new LlmError('Completed output does not match streamed content', 'PROTOCOL');
+            visible.delete(key);
+          }
+          if ([...visible.values()].some(part => part.text !== '')) throw new LlmError('Completed output contains unstreamed content', 'PROTOCOL');
+          const finalTools = output.filter(item => item.type === 'function_call');
           if (finalTools.length !== toolIds.size || new Set(finalTools.map(item => item.id)).size !== finalTools.length || new Set(finalTools.map(item => item.call_id)).size !== finalTools.length) throw new LlmError('Missing or duplicate tool items in completed response', 'PROTOCOL');
           for (const item of finalTools) {
             const streamed = blocks.get(item.id!)?.block;
-            if (!doneTools.has(item.id!) || item.namespace !== NAMESPACE || streamed?.type !== 'tool-call' || streamed.id !== item.call_id || streamed.name !== item.name || streamed.arguments !== item.arguments) throw new LlmError('Completed tool call does not match streamed declaration', 'PROTOCOL');
+            if (item.status !== 'completed' || !doneTools.has(item.id!) || item.namespace !== NAMESPACE || streamed?.type !== 'tool-call' || streamed.id !== item.call_id || streamed.name !== item.name || streamed.arguments !== item.arguments) throw new LlmError('Completed tool call does not match streamed declaration', 'PROTOCOL');
           }
           for (const entry of blocks.values()) yield { type: 'block-end', index: entry.index, block: entry.block };
           const usage = event.response.usage;
           if (usage) yield usageChunk(usage);
-          if (!event.response.output.every((item): item is ReplayItem => ['message', 'reasoning', 'function_call'].includes(item.type))) throw new LlmError('Unsupported output item in Responses stream', 'UNSUPPORTED_CONTENT');
           completed = true;
-          yield { type: 'finish', reason: { kind: hasTools ? 'tool-calls' : 'stop' }, replayState: { response: { version: 1, output: event.response.output, content: [...blocks.values()].map(entry => entry.block) } satisfies Replay } };
+          yield { type: 'finish', reason: { kind: hasTools ? 'tool-calls' : 'stop' }, replayState: { response: { version: 1, output, content: [...blocks.values()].map(entry => entry.block) } satisfies Replay } };
           return;
         }
       }
       if (!completed) throw new LlmError('Stream ended before response.completed', 'STREAM_TRUNCATED');
     } catch (error) {
-      if (error instanceof OpenAI.APIError) throw new LlmError(`ChatGPT plan HTTP ${error.status ?? 'unknown'}: ${error.code ?? 'API_ERROR'}${error.param ? ` (parameter: ${error.param})` : ''}`, error.status === 503 ? 'SERVER_UNAVAILABLE' : error.code ?? 'API_ERROR', { status: error.status, requestId: error.requestID ? ProviderRequestId(error.requestID) : undefined, cause: error });
+      if (error instanceof OpenAI.APIConnectionError) {
+        const cause = error.cause as { code?: string; cause?: { code?: string } } | undefined;
+        const code = cause?.code ?? cause?.cause?.code;
+        throw new LlmError(`ChatGPT plan connection failed${code ? ` (${code})` : ''}; check the DSH Host network and HTTP/HTTPS proxy settings`, 'CONNECTION_ERROR', { cause: error });
+      }
+      if (error instanceof OpenAI.APIError) {
+        // Admission failures may be {detail: "..."} rather than the standard {error: ...}.
+        const payload = error.error as { detail?: unknown; message?: unknown } | undefined;
+        const detail = typeof payload?.detail === 'string' ? payload.detail : typeof payload?.message === 'string' ? payload.message : '';
+        throw new LlmError(`ChatGPT plan HTTP ${error.status ?? 'unknown'}: ${error.code ?? 'API_ERROR'}${error.param ? ` (parameter: ${error.param})` : ''}${detail ? ` — ${detail.slice(0, 1000)}` : ''}`, error.status === 503 ? 'SERVER_UNAVAILABLE' : error.code ?? 'API_ERROR', { status: error.status, requestId: error.requestID ? ProviderRequestId(error.requestID) : undefined, cause: error });
+      }
       throw error;
     } finally { controller.abort(); }
   }
@@ -204,14 +268,18 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => async () => { await (await domain).close(); });
   const sessions = domain.then(domain => domain.table('sessions'));
   sessions.catch(error => ctx.logger(name).error('Cannot open session speed storage: %s', error instanceof Error ? error.message : 'storage failure'));
-  ctx.plugin(scope => { new Controls(scope, config, sessions); });
+  const network = ctx.storageDomain.open(networkDomain);
+  ctx.effect(() => async () => { await (await network).close(); });
+  const networkSettings = new NetworkSettings(network.then(domain => domain.table('settings')), config.proxyUrl);
+  ctx.plugin(scope => { new Controls(scope, config, sessions, undefined, networkSettings); });
   const requests = new RequestSpeeds(sessions);
   ctx.on('agent/request', async ({ agent, turn, step, signal }, next) => {
     await requests.capture(agent.session.id, turn, step, signal);
     return next();
   });
-  const adapter = new ChatGPTPlanAdapter({ ...config, sessionSpeed: async (id, signal) =>
+  const adapter = new ChatGPTPlanAdapter({ ...config, getProxyUrl: async () => (await networkSettings.get()).proxyUrl, sessionSpeed: async (id, signal) =>
     requests.read(id, signal),
     onWarning: message => ctx.logger(name).warn(message) });
+  ctx.effect(() => () => adapter.dispose());
   ctx.effect(() => ctx.llm.registerAdapter([ROUTE], adapter));
 }

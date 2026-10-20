@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { Context } from '@deepseek-ai/cordis';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import Storage from '@deepseek-ai/dsh-storage';
 import * as JsonStorage from '@deepseek-ai/dsh-storage-json';
 import * as DomainStorage from '@deepseek-ai/dsh-storage-domain';
@@ -50,7 +50,7 @@ test('namespace tool call, encrypted reasoning replay and complete tool-result r
   const chunks = await collect(adapter([
     { type: 'response.output_item.added', item: { ...item, arguments: '' } },
     { type: 'response.function_call_arguments.delta', item_id: 'fc_1', delta: '{"s":"hi"}' },
-    { type: 'response.output_item.done', item }, done([reasoning, item])
+    { type: 'response.output_item.done', output_index: 1, item }, done([reasoning, item])
   ]).stream({ ...options, tools }));
   const finish = chunks.at(-1); assert.equal(finish.reason.kind, 'tool-calls');
   const body = requestBody({ ...options, tools, messages: [...options.messages, { role: 'assistant', content: [{ type: 'tool-call', id: 'call_1', name: 'echo', arguments: item.arguments }], source: { provider: options.provider, model: options.model, replayState: finish.replayState } }, { role: 'tool', toolCallId: 'call_1', content: [{ type: 'text', text: 'hi' }] }] }, {});
@@ -146,14 +146,13 @@ test('incomplete terminal events report available usage before failure', async (
   assert.equal(chunks.find(c => c.type === 'usage').usage.inputTokens, 12);
 });
 
-for (const scenario of ['missing-final', 'duplicate-final', 'duplicate-added', 'duplicate-done', 'missing-done', 'late-delta', 'mismatched-final']) test(`tool lifecycle refuses ${scenario} without a successful finish`, async () => {
+for (const scenario of ['duplicate-final', 'duplicate-added', 'duplicate-done', 'missing-done', 'late-delta', 'mismatched-final']) test(`tool lifecycle refuses ${scenario} without a successful finish`, async () => {
   const item = { type: 'function_call', id: 'fc', call_id: 'call', namespace: 'dsh', name: 'echo', arguments: '{}', status: 'completed' };
   const added = { type: 'response.output_item.added', item: { ...item, arguments: '' } };
   const args = { type: 'response.function_call_arguments.delta', item_id: 'fc', delta: '{}' };
-  const ended = { type: 'response.output_item.done', item };
+  const ended = { type: 'response.output_item.done', output_index: 0, item };
   const events = [added, args, ended];
   let final = [item];
-  if (scenario === 'missing-final') final = [];
   if (scenario === 'duplicate-final') final = [item, item];
   if (scenario === 'duplicate-added') events.splice(1, 0, added);
   if (scenario === 'duplicate-done') events.push(ended);
@@ -215,5 +214,149 @@ test('published package, lockfile, plugin identifier and CLI share the requested
   const plugin = await import('../dist/index.js');
   assert.equal(pkg.name, 'dsh-cleangpt-plugin'); assert.equal(lock.name, pkg.name); assert.equal(lock.packages[''].name, pkg.name);
   assert.equal(plugin.name, pkg.name); assert.deepEqual(Object.keys(pkg.bin), [pkg.name]);
-  assert.equal(plugin.Config({}).authDir.endsWith('/dsh-cleangpt-plugin'), true);
+  assert.equal(basename(plugin.Config({}).authDir), 'dsh-cleangpt-plugin');
+});
+
+test('Auto omits unsupported literal service_tier on the default adapter path', async () => {
+  await collect(adapter([delta, done()], (_url, init) => assert.equal('service_tier' in JSON.parse(init.body), false)).stream(options));
+  assert.equal('service_tier' in requestBody(options, { serviceTier: 'auto' }), false);
+});
+test('direct admission detail is visible and a 400 is not retried', async () => {
+  let calls = 0;
+  const a = new ChatGPTPlanAdapter({ token: async () => 'mock', fetch: async () => { calls++; return Response.json({ detail: 'Unsupported service_tier: auto' }, { status: 400 }); } });
+  await assert.rejects(collect(a.stream(options)), e => e.failure.status === 400 && /Unsupported service_tier: auto/.test(e.message));
+  assert.equal(calls, 1);
+});
+test('transport failures identify the connection error instead of HTTP unknown', async () => {
+  const a = new ChatGPTPlanAdapter({ token: async () => 'mock', fetch: async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_CONNECT_TIMEOUT' } }); } });
+  await assert.rejects(collect(a.stream(options)), e => /connection failed.*UND_ERR_CONNECT_TIMEOUT/.test(e.message) && !/HTTP unknown/.test(e.message));
+});
+
+test('explicit model proxy uses a per-request dispatcher for catalog and inference', async () => {
+  const originalFetch = globalThis.fetch;
+  const dispatchers = [];
+  const a = new ChatGPTPlanAdapter({ proxyUrl: 'http://127.0.0.1:7897', token: async () => 'mock', fetch: async (url, init) => {
+    dispatchers.push(init.dispatcher);
+    return String(url).endsWith('/models') ? Response.json({ models: [] }) : sse([delta, done()]);
+  } });
+  try {
+    await a.listModels('chatgpt-plan'); await collect(a.stream(options));
+    assert.ok(dispatchers[0]); assert.equal(dispatchers[0], dispatchers[1]);
+    assert.equal(globalThis.fetch, originalFetch);
+  } finally { await a.dispose(); }
+});
+test('invalid explicit proxies fail before credential lookup or network use', () => {
+  for (const proxyUrl of ['7897', 'socks5://127.0.0.1:7897', 'http://user:password@localhost:7897', 'http://localhost:7897/path'])
+    assert.throws(() => new ChatGPTPlanAdapter({ proxyUrl }), /代理地址/);
+});
+
+test('empty terminal output uses ordered complete item snapshots and replays tool results', async () => {
+  const item = { type: 'function_call', id: 'fc_empty', call_id: 'call_empty', namespace: 'dsh', name: 'echo', arguments: '{}', status: 'completed' };
+  const reasoning = { type: 'reasoning', id: 'rs_empty', encrypted_content: 'synthetic', summary: [] };
+  const tools = [{ name: 'echo', description: '', parameters: {} }];
+  const chunks = await collect(adapter([
+    { type: 'response.output_item.added', output_index: 1, item: { ...item, arguments: '' } },
+    { type: 'response.function_call_arguments.delta', item_id: item.id, delta: '{}' },
+    { type: 'response.output_item.done', output_index: 1, item },
+    { type: 'response.output_item.done', output_index: 0, item: reasoning }, done([]),
+  ]).stream({ ...options, tools }));
+  const finish = chunks.at(-1);
+  assert.equal(finish.reason.kind, 'tool-calls');
+  assert.deepEqual(finish.replayState.response.output, [reasoning, item]);
+  const body = requestBody({ ...options, tools, messages: [{ role: 'assistant', content: [{ type: 'tool-call', id: item.call_id, name: 'echo', arguments: '{}' }], source: { provider: options.provider, model: options.model, replayState: finish.replayState } }, { role: 'tool', toolCallId: item.call_id, content: [{ type: 'text', text: 'OK' }] }] }, {});
+  assert.deepEqual(body.input, [reasoning, item, { type: 'function_call_output', call_id: item.call_id, output: 'OK' }]);
+});
+
+test('empty terminal output preserves complete text, refusal and reasoning snapshots on replay', async () => {
+  const reasoning = { type: 'reasoning', id: 'rs_complete', summary: [{ type: 'summary_text', text: 'Summary' }], encrypted_content: 'synthetic' };
+  const refusal = { type: 'message', id: 'ref_complete', role: 'assistant', status: 'completed', content: [{ type: 'refusal', refusal: 'Cannot help' }] };
+  const items = [reasoning, output[0], refusal];
+  const chunks = await collect(adapter([
+    { type: 'response.reasoning_summary_text.delta', item_id: reasoning.id, summary_index: 0, output_index: 0, delta: 'Summary' },
+    { ...delta, output_index: 1 },
+    { type: 'response.refusal.delta', item_id: refusal.id, content_index: 0, output_index: 2, delta: 'Cannot help' },
+    ...items.map((item, output_index) => ({ type: 'response.output_item.done', output_index, item })).reverse(),
+    done([]),
+  ]).stream(options));
+  const replayState = chunks.at(-1).replayState;
+  const body = requestBody({ ...options, messages: [{ role: 'assistant', content: replayState.response.content, source: { provider: options.provider, model: options.model, replayState } }] }, {});
+  assert.deepEqual(body.input, items);
+});
+
+for (const scenario of ['missing-text', 'missing-reasoning', 'mismatched-text', 'incomplete-message', 'missing-added-item', 'gapped-index', 'duplicate-id']) test(`empty terminal reconstruction refuses ${scenario} without success`, async () => {
+  const events = [delta];
+  const message = { ...output[0] };
+  if (scenario === 'mismatched-text') message.content = [{ type: 'output_text', text: 'different', annotations: [] }];
+  if (scenario === 'incomplete-message') message.status = 'incomplete';
+  if (scenario === 'missing-reasoning') events.push({ type: 'response.reasoning_summary_text.delta', item_id: 'rs_missing', summary_index: 0, output_index: 1, delta: 'Summary' });
+  if (scenario === 'missing-added-item') events.push({ type: 'response.output_item.added', output_index: 1, item: { type: 'reasoning', id: 'rs_missing', summary: [] } });
+  if (scenario !== 'missing-text') events.push({ type: 'response.output_item.done', output_index: scenario === 'gapped-index' ? 1 : 0, item: message });
+  if (scenario === 'duplicate-id') events.push({ type: 'response.output_item.done', output_index: 1, item: message });
+  events.push(done([]));
+  const chunks = [];
+  await assert.rejects(async () => { for await (const chunk of adapter(events).stream(options)) chunks.push(chunk); }, error => error.code === 'PROTOCOL');
+  assert.equal(chunks.some(chunk => chunk.type === 'finish'), false);
+});
+
+test('empty terminal tool reconstruction cannot omit a streamed text item', async () => {
+  const item = { type: 'function_call', id: 'fc_partial', call_id: 'call_partial', namespace: 'dsh', name: 'echo', arguments: '{}', status: 'completed' };
+  const events = [
+    { type: 'response.output_item.added', output_index: 0, item: { ...item, arguments: '' } },
+    { type: 'response.function_call_arguments.delta', item_id: item.id, delta: '{}' },
+    { type: 'response.output_item.done', output_index: 0, item },
+    { ...delta, output_index: 1 }, done([]),
+  ];
+  await assert.rejects(collect(adapter(events).stream({ ...options, tools: [{ name: 'echo', description: '', parameters: {} }] })), error => error.code === 'PROTOCOL');
+});
+
+for (const scenario of ['mismatched-text', 'unstreamed-text', 'incomplete-reasoning']) test(`nonempty terminal output refuses ${scenario} without success`, async () => {
+  const items = [...output];
+  if (scenario === 'mismatched-text') items[0] = { ...items[0], content: [{ type: 'output_text', text: 'different', annotations: [] }] };
+  if (scenario === 'unstreamed-text') items.push({ ...items[0], id: 'msg_extra' });
+  if (scenario === 'incomplete-reasoning') items.push({ type: 'reasoning', id: 'rs_incomplete', status: 'incomplete', summary: [], encrypted_content: 'synthetic' });
+  const chunks = [];
+  await assert.rejects(async () => { for await (const chunk of adapter([delta, done(items)]).stream(options)) chunks.push(chunk); }, error => error.code === 'PROTOCOL');
+  assert.equal(chunks.some(chunk => chunk.type === 'finish'), false);
+});
+
+for (const phase of ['item-done', 'terminal']) for (const status of ['in_progress', 'incomplete', undefined]) test(`tool ${phase} refuses ${status ?? 'missing'} completion status`, async () => {
+  const item = { type: 'function_call', id: 'fc_status', call_id: 'call_status', namespace: 'dsh', name: 'echo', arguments: '{}', status: 'completed' };
+  const events = [
+    { type: 'response.output_item.added', output_index: 0, item: { ...item, arguments: '' } },
+    { type: 'response.function_call_arguments.delta', item_id: item.id, delta: '{}' },
+    { type: 'response.output_item.done', output_index: 0, item: phase === 'item-done' ? { ...item, status } : item },
+    done([phase === 'terminal' ? { ...item, status } : item]),
+  ];
+  const chunks = [];
+  await assert.rejects(async () => { for await (const chunk of adapter(events).stream({ ...options, tools: [{ name: 'echo', description: '', parameters: {} }] })) chunks.push(chunk); }, error => error.code === 'PROTOCOL');
+  assert.equal(chunks.some(chunk => chunk.type === 'finish'), false);
+});
+
+test('legacy empty replay falls back to visible assistant history instead of dropping it', () => {
+  const content = [{ type: 'text', text: 'Saved visible answer' }];
+  const body = requestBody({ ...options, messages: [{ role: 'assistant', content, source: { provider: options.provider, model: options.model, replayState: { response: { version: 1, output: [], content } } } }] }, {});
+  assert.deepEqual(body.input, [{ role: 'assistant', content: 'Saved visible answer' }]);
+});
+
+test('legacy empty replay preserves reasoning summaries and tool call/result pairing', () => {
+  const content = [{ type: 'reasoning', text: 'Saved summary' }, { type: 'tool-call', id: 'call_saved', name: 'echo', arguments: '{}' }];
+  const body = requestBody({ ...options, tools: [{ name: 'echo', description: '', parameters: {} }], messages: [
+    { role: 'assistant', content, source: { provider: options.provider, model: options.model, replayState: { response: { version: 1, output: [], content } } } },
+    { role: 'tool', toolCallId: 'call_saved', content: [{ type: 'text', text: 'Saved result' }] },
+  ] }, {});
+  assert.deepEqual(body.input, [
+    { role: 'assistant', content: '[Prior reasoning summary]\nSaved summary' },
+    { type: 'function_call', namespace: 'dsh', call_id: 'call_saved', name: 'echo', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'call_saved', output: 'Saved result' },
+  ]);
+});
+
+test('saved proxy changes affect subsequent requests without changing an in-flight dispatcher', async () => {
+ let proxyUrl='http://127.0.0.1:7897'; const seen=[];
+ const a=new ChatGPTPlanAdapter({getProxyUrl:async()=>proxyUrl,token:async()=> 'mock',fetch:async(_u,init)=>{seen.push(init.dispatcher);return sse([delta,done()]);}});
+ try {
+  await collect(a.stream(options)); proxyUrl='http://127.0.0.1:7898'; await collect(a.stream(options));
+  assert.ok(seen[0]); assert.ok(seen[1]); assert.notEqual(seen[0],seen[1]);
+  proxyUrl=''; await collect(a.stream(options)); assert.equal(seen[2],undefined);
+ }finally{await a.dispose();}
 });

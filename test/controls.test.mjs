@@ -10,6 +10,7 @@ import * as Domain from '@deepseek-ai/dsh-storage-domain';
 import { Controls, sessionDomain } from '../dist/controls.js';
 import { credentialStatus } from '../dist/auth.js';
 import { ChatGPTPlanAdapter } from '../dist/index.js';
+import { privateTemporary } from './private-temporary.mjs';
 async function harness() {
   const root = await mkdtemp(join(tmpdir(),'cleangpt-controls-'));
   const ctx = new Context(); await ctx.plugin(Storage); await ctx.plugin(Json,{root}); await ctx.plugin(Domain,{backend:'json'});
@@ -49,7 +50,7 @@ test('declined authorization is a safe failed state and can be retried without e
   }finally{await h.close();}
 });
 test('status exposes neither token, identity nor credential path; permission differs from entitlement',async()=>{
- const root=await mkdtemp(join(tmpdir(),'cleangpt-status-'));try{
+ const root=await privateTemporary();try{
  await writeFile(join(root,'mock.json'),JSON.stringify({client_id:'mock-client',access_token:'mock-secret-access',refresh_token:'mock-secret-refresh',id_token:'mock-secret-id',email:'private@mock.invalid',subject:'mock-sub',scope:'chatgpt.tokens.use.direct',expires_at:Date.now()+100000}),{mode:0o600});
  assert.deepEqual(await credentialStatus(root,'mock'),{account:'mock',signedIn:true,permission:true,renewalUncertain:false});
  }finally{await rm(root,{recursive:true,force:true});}
@@ -98,10 +99,10 @@ test('installed bundle exposes all public efforts and tiers; each pair and confi
  const h=await harness();try{
   const c=new Controls(h.ctx,{authDir:h.root,account:'mock',serviceTiers:[...tiers,'future-tier'],serviceTier:config.serviceTier},Promise.resolve(h.domain.table('sessions')));
   const sent=[];const a=new ChatGPTPlanAdapter({reasoningEfforts:[...efforts,'future-effort'],sessionSpeed:id=>c.getSpeed(id),token:async()=> 'mock-token',fetch:async(_u,init)=>{sent.push(JSON.parse(init.body));return new Response('event: error\ndata: {"type":"error","code":"mock-stop"}\n\n',{headers:{'Content-Type':'text/event-stream'}});}});
-  const model=await a.resolveModel('chatgpt-plan','mock-model');assert.deepEqual(model.reasoning.efforts.map(x=>x.id),[...efforts,'future-effort']);assert.ok(model.reasoning.efforts.every(x=>x.name.endsWith('(server validates)')));
+  const model=await a.resolveModel('chatgpt-plan','mock-model');assert.deepEqual(model.reasoning.efforts.map(x=>x.id),[...efforts,'future-effort']);assert.equal(model.reasoning.efforts.find(x=>x.id==='high').name,'高');
   for(const tier of [...tiers,'future-tier','legacy-tier'])for(const effort of [...efforts,'future-effort']){
    await c.setSpeed('A',tier);await assert.rejects(Array.fromAsync(a.stream({sessionId:'A',provider:'chatgpt-plan',model:'mock-model',reasoningEffort:effort,messages:[]})));
-   assert.equal(sent.at(-1).service_tier,tier);assert.equal(sent.at(-1).reasoning.effort,effort);
+   assert.equal(sent.at(-1).service_tier,tier === 'auto' ? undefined : tier);assert.equal(sent.at(-1).reasoning.effort,effort);
   }
   const view=await c.watchSpeed('A','',new AbortController().signal);assert.ok(view.choices.includes('future-tier'));assert.ok(view.choices.includes('legacy-tier'));
  }finally{await h.close();}
@@ -109,4 +110,21 @@ test('installed bundle exposes all public efforts and tiers; each pair and confi
 test('unsupported configured tier returns the server parameter error without fallback',async()=>{
  let calls=0;const a=new ChatGPTPlanAdapter({sessionSpeed:async()=> 'future-denied-tier',token:async()=> 'mock-token',fetch:async(_u,init)=>{calls++;assert.equal(JSON.parse(init.body).service_tier,'future-denied-tier');return Response.json({error:{code:'unsupported_capability',param:'service_tier',message:'Synthetic unsupported tier'}},{status:400});}});
  await assert.rejects(Array.fromAsync(a.stream({sessionId:'A',provider:'chatgpt-plan',model:'mock-model',messages:[]})),error=>error.failure.status===400&&error.cause.param==='service_tier'&&/unsupported_capability/.test(error.message));assert.equal(calls,1);
+});
+
+// Settings survive a reopened storage domain, and blank explicitly overrides a configured proxy.
+test('model proxy preferences validate, persist and override profile defaults', async () => {
+ const { networkDomain, NetworkSettings } = await import('../dist/network.js');
+ const h=await harness();try {
+  const domain=await h.ctx.storageDomain.open(networkDomain);
+  const settings=new NetworkSettings(Promise.resolve(domain.table('settings')),'http://127.0.0.1:7897');
+  assert.equal((await settings.get()).proxyUrl,'http://127.0.0.1:7897');
+  await assert.rejects(settings.set('socks5://127.0.0.1:7897'));
+  assert.equal((await settings.get()).proxyUrl,'http://127.0.0.1:7897');
+  await settings.set('http://127.0.0.1:7898/'); await domain.close();
+  const reopened=await h.ctx.storageDomain.open(networkDomain);
+  const restored=new NetworkSettings(Promise.resolve(reopened.table('settings')),'http://127.0.0.1:7897');
+  assert.equal((await restored.get()).proxyUrl,'http://127.0.0.1:7898');
+  await restored.set(''); assert.equal((await restored.get()).proxyUrl,'');
+ }finally{await h.close();}
 });

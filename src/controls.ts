@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { setTimeout } from 'node:timers/promises';
 import { credentialStatus, login } from './auth.js';
+import type { NetworkSettings, ProxyView } from './network.js';
 
 export const defaultServiceTiers = ['auto', 'default', 'fast', 'ultrafast', 'priority', 'flex', 'scale'];
 export const speedSchema = z.string().min(1);
@@ -40,7 +41,8 @@ export class Controls extends TypertRemoteService {
   private phase: SafeStatus['phase'] = 'idle';
   constructor(ctx: Context, private readonly config: { authDir: string; account: string; serviceTiers?: string[]; serviceTier?: string },
     private readonly sessions: Promise<SessionPreferences>,
-    private readonly signIn: typeof login = login) {
+    private readonly signIn: typeof login = login,
+    private readonly network?: NetworkSettings) {
     super(ctx, 'cleangptControls', { namespace: 'cleangpt' });
     this.owner = ctx;
     this.choices().forEach(value => speedSchema.parse(value));
@@ -49,6 +51,16 @@ export class Controls extends TypertRemoteService {
   }
   private choices(current?: string): string[] {
     return [...new Set(['auto', ...(this.config.serviceTiers ?? defaultServiceTiers), ...(this.config.serviceTier ? [this.config.serviceTier] : []), ...(current ? [current] : [])])];
+  }
+  @Remote
+  async getProxy(): Promise<ProxyView> {
+    if (!this.network) throw new Error('代理设置不可用');
+    return this.network.get();
+  }
+  @Remote
+  async setProxy(proxyUrl: string): Promise<ProxyView> {
+    if (!this.network) throw new Error('代理设置不可用');
+    return this.network.set(proxyUrl);
   }
   @Remote
   async status(): Promise<SafeStatus> {
