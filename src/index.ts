@@ -143,6 +143,7 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
     let requestId: string | undefined;
     const blocks = new Map<string, { index: number; block: ContentBlock }>();
     const toolIds = new Set<string>(), doneTools = new Set<string>();
+    const completedItems = new Map<number, ResponseOutputItem>();
     let index = 0, completed = false, hasTools = false;
     const begin = (key: string, block: ContentBlock): StreamChunk => {
       const entry = { index: index++, block }; blocks.set(key, entry);
@@ -156,6 +157,10 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
       requestId = result.request_id ?? undefined;
       for await (const event of result.data) {
         signal.throwIfAborted();
+        if (event.type === 'response.output_item.done') {
+          if (completedItems.has(event.output_index)) throw new LlmError('Duplicate completed output index', 'PROTOCOL');
+          completedItems.set(event.output_index, event.item);
+        }
         if (event.type === 'response.output_item.added' && event.item.type === 'function_call') {
           const item = event.item;
           if (!item.id || !item.call_id || blocks.has(item.id) || toolIds.has(item.call_id)) throw new LlmError('Missing or duplicate tool item/call ID', 'PROTOCOL');
@@ -191,7 +196,10 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
         } else if (event.type === 'response.completed') {
           if (event.response.status !== 'completed') throw new LlmError('Response status was not completed', 'PROTOCOL');
           if (blocks.size === 0) throw new LlmError('Response completed without content or tool calls', 'EMPTY_RESPONSE');
-          const finalTools = event.response.output.filter(item => item.type === 'function_call');
+          // Some plan streams omit the terminal output snapshot. Reconstruct only
+          // from complete item.done snapshots, preserving their original order.
+          const output = event.response.output.length ? event.response.output : [...completedItems.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
+          const finalTools = output.filter(item => item.type === 'function_call');
           if (finalTools.length !== toolIds.size || new Set(finalTools.map(item => item.id)).size !== finalTools.length || new Set(finalTools.map(item => item.call_id)).size !== finalTools.length) throw new LlmError('Missing or duplicate tool items in completed response', 'PROTOCOL');
           for (const item of finalTools) {
             const streamed = blocks.get(item.id!)?.block;
@@ -200,9 +208,9 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
           for (const entry of blocks.values()) yield { type: 'block-end', index: entry.index, block: entry.block };
           const usage = event.response.usage;
           if (usage) yield usageChunk(usage);
-          if (!event.response.output.every((item): item is ReplayItem => ['message', 'reasoning', 'function_call'].includes(item.type))) throw new LlmError('Unsupported output item in Responses stream', 'UNSUPPORTED_CONTENT');
+          if (!output.every((item): item is ReplayItem => ['message', 'reasoning', 'function_call'].includes(item.type))) throw new LlmError('Unsupported output item in Responses stream', 'UNSUPPORTED_CONTENT');
           completed = true;
-          yield { type: 'finish', reason: { kind: hasTools ? 'tool-calls' : 'stop' }, replayState: { response: { version: 1, output: event.response.output, content: [...blocks.values()].map(entry => entry.block) } satisfies Replay } };
+          yield { type: 'finish', reason: { kind: hasTools ? 'tool-calls' : 'stop' }, replayState: { response: { version: 1, output, content: [...blocks.values()].map(entry => entry.block) } satisfies Replay } };
           return;
         }
       }

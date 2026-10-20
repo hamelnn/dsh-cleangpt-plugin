@@ -39,3 +39,9 @@ CI 在 Linux、macOS 与 Windows 上运行 unit/type/build/pack（包括各平�
 新增默认 Auto 请求、非标准 `{detail: ...}` 错误和网络连接失败回归。63 项本机测试通过。该验证仅覆盖此账号的单轮文本调用，不代表所有候选模型、effort、tier 或真实工具执行均已验证；未提交或打包任何凭据。直接联网超时、使用本机已有 HTTP/HTTPS 代理成功。
 
 独立模型代理：`proxyUrl` 使用插件自己的 HTTP/HTTPS CONNECT dispatcher，仅覆盖 catalog/Responses，Host 全局设置不变。Windows 上不启用全局代理初始化，直接设置 `http://127.0.0.1:7897` 后成功获取 7 个可见模型，并完成 `gpt-6.1-sol` 单轮真实调用，输出 `OK`。本机 65 项测试通过，包含代理参数校验与 catalog/Responses 共用私有 dispatcher。
+
+## 工具调用终态兼容修复（2026-10-20）
+
+真实调用复现：function_call 的 output_item.added、参数增量及 output_item.done 均完整，response.completed.output 却为 []。原实现因此误报 Missing or duplicate tool items in completed response。现在仅在终态快照为空时，使用按 output_index 排序的完整 item.done 快照恢复输出与 replay；工具名称、namespace、ID、参数及完成状态仍核验，非空终态的缺失或冲突仍拒绝。
+
+本机 65 项测试通过，覆盖空终态工具快照及后续 replay。真实 gpt-6.1-sol 通过本机 HTTP 代理完成两轮合成 ping 工具往返：首轮 tool-calls，提交合成 OK 结果后第二轮 stop 并回复 The tool returned: OK。没有执行真实业务工具。

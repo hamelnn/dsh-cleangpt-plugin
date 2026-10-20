@@ -146,14 +146,13 @@ test('incomplete terminal events report available usage before failure', async (
   assert.equal(chunks.find(c => c.type === 'usage').usage.inputTokens, 12);
 });
 
-for (const scenario of ['missing-final', 'duplicate-final', 'duplicate-added', 'duplicate-done', 'missing-done', 'late-delta', 'mismatched-final']) test(`tool lifecycle refuses ${scenario} without a successful finish`, async () => {
+for (const scenario of ['duplicate-final', 'duplicate-added', 'duplicate-done', 'missing-done', 'late-delta', 'mismatched-final']) test(`tool lifecycle refuses ${scenario} without a successful finish`, async () => {
   const item = { type: 'function_call', id: 'fc', call_id: 'call', namespace: 'dsh', name: 'echo', arguments: '{}', status: 'completed' };
   const added = { type: 'response.output_item.added', item: { ...item, arguments: '' } };
   const args = { type: 'response.function_call_arguments.delta', item_id: 'fc', delta: '{}' };
-  const ended = { type: 'response.output_item.done', item };
+  const ended = { type: 'response.output_item.done', output_index: 0, item };
   const events = [added, args, ended];
   let final = [item];
-  if (scenario === 'missing-final') final = [];
   if (scenario === 'duplicate-final') final = [item, item];
   if (scenario === 'duplicate-added') events.splice(1, 0, added);
   if (scenario === 'duplicate-done') events.push(ended);
@@ -249,4 +248,21 @@ test('explicit model proxy uses a per-request dispatcher for catalog and inferen
 test('invalid explicit proxies fail before credential lookup or network use', () => {
   for (const proxyUrl of ['7897', 'socks5://127.0.0.1:7897', 'http://user:password@localhost:7897', 'http://localhost:7897/path'])
     assert.throws(() => new ChatGPTPlanAdapter({ proxyUrl }), /proxyUrl must/);
+});
+
+test('empty terminal output uses ordered complete item snapshots and replays tool results', async () => {
+  const item = { type: 'function_call', id: 'fc_empty', call_id: 'call_empty', namespace: 'dsh', name: 'echo', arguments: '{}', status: 'completed' };
+  const reasoning = { type: 'reasoning', id: 'rs_empty', encrypted_content: 'synthetic', summary: [] };
+  const tools = [{ name: 'echo', description: '', parameters: {} }];
+  const chunks = await collect(adapter([
+    { type: 'response.output_item.added', output_index: 1, item: { ...item, arguments: '' } },
+    { type: 'response.function_call_arguments.delta', item_id: item.id, delta: '{}' },
+    { type: 'response.output_item.done', output_index: 1, item },
+    { type: 'response.output_item.done', output_index: 0, item: reasoning }, done([]),
+  ]).stream({ ...options, tools }));
+  const finish = chunks.at(-1);
+  assert.equal(finish.reason.kind, 'tool-calls');
+  assert.deepEqual(finish.replayState.response.output, [reasoning, item]);
+  const body = requestBody({ ...options, tools, messages: [{ role: 'assistant', content: [{ type: 'tool-call', id: item.call_id, name: 'echo', arguments: '{}' }], source: { provider: options.provider, model: options.model, replayState: finish.replayState } }, { role: 'tool', toolCallId: item.call_id, content: [{ type: 'text', text: 'OK' }] }] }, {});
+  assert.deepEqual(body.input, [reasoning, item, { type: 'function_call_output', call_id: item.call_id, output: 'OK' }]);
 });
