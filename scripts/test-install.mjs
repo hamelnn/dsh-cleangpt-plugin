@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, cp, access } from 'node:fs/pro
 import { tmpdir } from 'node:os';
 import { join, resolve, delimiter } from 'node:path';
 import { pack } from './pack.mjs';
-import { npm, run } from './test-helpers.mjs';
+import { npm, run, repo } from './test-helpers.mjs';
 import { privateDirectory } from '../dist/credential-files.js';
 
 if (!process.env.DSH_TEST_RUNTIME) throw new Error('Set DSH_TEST_RUNTIME to an isolated @deepseek-ai/dsh@0.2.1-rc.2 + pnpm installation.');
@@ -20,9 +20,27 @@ const bundleCount = manifest => manifest.dsh.profile.bundles.filter(bundle => (t
 try {
   const { tarball, manifest, files } = await pack(join(root, 'download with spaces'));
   const add = path => plugin(['add', '--ignore-scripts', '--registry=https://registry.npmjs.org', path]);
-  await add(tarball);
+  // A previous-version fixture models users already on PR #2's 0.1.2.
+  // Replacing a tarball at the same filename/version can retain pnpm's old
+  // resolution, so releases must advance version and filename together.
+  const staging = join(root, 'previous-version'); await mkdir(staging);
+  for (const file of files) {
+    const destination = join(staging, file);
+    await mkdir(resolve(destination, '..'), { recursive: true });
+    await cp(join(repo, file), destination);
+  }
+  const [major, minor, patch] = manifest.version.split('.').map(Number);
+  assert.ok(patch > 0, 'The previous-version fixture requires a positive patch version');
+  const previousVersion = `${major}.${minor}.${patch - 1}`;
+  await writeFile(join(staging, 'package.json'), JSON.stringify({ ...manifest, version: previousVersion }, null, 2));
+  const previousSource = await readFile(join(staging, 'dist/index.js'), 'utf8');
+  await writeFile(join(staging, 'dist/index.js'), `${previousSource}\nexport const syntheticPreviousVersion = true;\n`);
+  const [previous] = JSON.parse(await npm(['pack', '--ignore-scripts', '--json', '--pack-destination', root], { cwd: staging }));
+  await add(join(root, previous.filename));
   assert.equal(bundleCount(await readManifest()), 1, 'One bundle must be auto-registered without editing YAML');
   const installed = join(profile, 'node_modules/dsh-cleangpt-plugin');
+  assert.equal(JSON.parse(await readFile(join(installed, 'package.json'), 'utf8')).version, previousVersion);
+  assert.match(await readFile(join(installed, 'dist/index.js'), 'utf8'), /syntheticPreviousVersion/);
   await access(join(installed, 'dist/index.js'));
   await access(join(installed, 'dist/client.js'));
   const composed = await run(process.execPath, [cli, '--profile', 'web', '--dump-config'], { env });
@@ -45,29 +63,18 @@ try {
     assert.equal(await readFile(join(other, 'package.json'), 'utf8'), '{"private":true,"mock":"untouched"}\n');
   };
   await add(tarball);
-  assert.equal(bundleCount(await readManifest()), 1, 'Reinstall must not duplicate the bundle');
+  assert.equal(JSON.parse(await readFile(join(installed, 'package.json'), 'utf8')).version, manifest.version);
+  assert.doesNotMatch(await readFile(join(installed, 'dist/index.js'), 'utf8'), /syntheticPreviousVersion/, 'Upgrade must replace old code, not just package metadata');
+  assert.equal(bundleCount(await readManifest()), 1, 'Upgrade must not duplicate the bundle');
   await assertPreserved();
-
-  // A different synthetic package version exercises an actual upgrade, not just reinstall.
-  const staging = join(root, 'upgrade'); await mkdir(staging);
-  for (const file of files) {
-    const destination = join(staging, file);
-    await mkdir(resolve(destination, '..'), { recursive: true });
-    await cp(join(installed, file), destination);
-  }
-  const [major, minor, patch] = manifest.version.split('.').map(Number);
-  const nextVersion = `${major}.${minor}.${patch + 1}-installtest.1`;
-  await writeFile(join(staging, 'package.json'), JSON.stringify({ ...manifest, version: nextVersion }, null, 2));
-  const [upgraded] = JSON.parse(await npm(['pack', '--ignore-scripts', '--json', '--pack-destination', root], { cwd: staging }));
-  await add(join(root, upgraded.filename));
-  assert.equal(JSON.parse(await readFile(join(installed, 'package.json'), 'utf8')).version, nextVersion);
-  assert.equal(bundleCount(await readManifest()), 1);
+  await add(tarball);
+  assert.equal(bundleCount(await readManifest()), 1, 'Reinstall must not duplicate the bundle');
   await assertPreserved();
   await plugin(['remove', 'dsh-cleangpt-plugin']);
   assert.equal(bundleCount(await readManifest()), 0);
   assert.equal((await readManifest()).dependencies?.['dsh-cleangpt-plugin'], undefined);
   await assertPreserved();
-  console.log('PASS: packed install, compiled Host/client, config composition, reinstall, upgrade, removal, preserved configuration and synthetic credentials.');
+  console.log('PASS: packed previous-version install, compiled Host/client, config composition, upgrade replaces code, reinstall, removal, preserved configuration and synthetic credentials.');
 } finally {
   await rm(root, { recursive: true, force: true, maxRetries: 3 });
 }

@@ -16,8 +16,8 @@ DSH 原生模型插件，通过 OpenAI 官方 Sign in with ChatGPT（SIWC）使�
 
 不需要修改 YAML，也不需要编译源码、安装全局 Node/pnpm 或运行 GitHub 仓库安装脚本。使用 DSH **0.2.1-rc.2**；其他版本先检查兼容性，不建议绕过版本检查。macOS 与 Windows 使用同一个预编译 `.tgz` 包。
 
-1. 在本仓库的 [Actions → CI](https://github.com/hamelnn/dsh-cleangpt-plugin/actions/workflows/ci.yml) 选择你已审阅提交的**完整绿色运行**，下载 `dsh-cleangpt-plugin-提交SHA` artifact。GitHub 下载 artifact 需要登录，保留 30 天。解压外层 ZIP，里面是 `dsh-cleangpt-plugin-0.1.2.tgz`、同名 `.sha256` 和 `package-manifest.json`。不要再解压 `.tgz`，也不要用 GitHub 的 Source code.zip 代替。这个流程不发布 npm 或 GitHub Release；旧 CI 运行没有此 artifact 时，可以按下文源码构建。
-2. 在 DSH 侧边栏打开「插件」→「添加插件」→「安装第三方插件」，输入 `.tgz` 在**运行 DSH 的电脑**上的绝对路径，例如 `/Users/你的用户名/Downloads/dsh-cleangpt-plugin-0.1.2.tgz` 或 `C:\Users\你的用户名\Downloads\dsh-cleangpt-plugin-0.1.2.tgz`。在界面输入路径时不要加引号。按界面提示确认安装并重载/重启。
+1. 在本仓库的 [Actions → CI](https://github.com/hamelnn/dsh-cleangpt-plugin/actions/workflows/ci.yml) 选择你已审阅提交的**完整绿色运行**，下载 `dsh-cleangpt-plugin-提交SHA` artifact。GitHub 下载 artifact 需要登录，保留 30 天。解压外层 ZIP，里面是 `dsh-cleangpt-plugin-0.1.3.tgz`、同名 `.sha256` 和 `package-manifest.json`。不要再解压 `.tgz`，也不要用 GitHub 的 Source code.zip 代替。这个流程不发布 npm 或 GitHub Release；旧 CI 运行没有此 artifact 时，可以按下文源码构建。
+2. 在 DSH 侧边栏打开「插件」→「添加插件」→「安装第三方插件」，输入 `.tgz` 在**运行 DSH 的电脑**上的绝对路径，例如 `/Users/你的用户名/Downloads/dsh-cleangpt-plugin-0.1.3.tgz` 或 `C:\Users\你的用户名\Downloads\dsh-cleangpt-plugin-0.1.3.tgz`。在界面输入路径时不要加引号。按界面提示确认安装并重载/重启。
 3. 打开 Settings → Models，看到「ChatGPT 订阅」卡片即已装载。未登录是正常状态，安装不会自动登录。你决定授予持续访问后，再点「使用 ChatGPT 授权登录」。授权页在 **Host 电脑的系统浏览器**打开，可取消或重新授权。
 
 以上 Desktop 菜单和本地 tarball 能力依据 [官方 Desktop 文档](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.1-rc.2/apps/desktop/README.zh.md) 与 [插件安装参数](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.1-rc.2/packages/boot/plugin-manager/src/install-spec.ts#L61-L76)。CI 验证三系统下同一包管理器与 Web Host，不冒充 Electron 桌面窗口实测。
@@ -29,14 +29,14 @@ DSH 原生模型插件，通过 OpenAI 官方 Sign in with ChatGPT（SIWC）使�
 macOS：
 
 ```sh
-shasum -a 256 -c dsh-cleangpt-plugin-0.1.2.tgz.sha256
+shasum -a 256 -c dsh-cleangpt-plugin-0.1.3.tgz.sha256
 ```
 
 Windows PowerShell：
 
 ```powershell
-Get-FileHash .\dsh-cleangpt-plugin-0.1.2.tgz -Algorithm SHA256
-Get-Content .\dsh-cleangpt-plugin-0.1.2.tgz.sha256
+Get-FileHash .\dsh-cleangpt-plugin-0.1.3.tgz -Algorithm SHA256
+Get-Content .\dsh-cleangpt-plugin-0.1.3.tgz.sha256
 ```
 
 ### 可选：用桌面版自带 dsh 命令安装
@@ -46,13 +46,13 @@ Get-Content .\dsh-cleangpt-plugin-0.1.2.tgz.sha256
 macOS：
 
 ```sh
-dsh plugin --profile desktop add --ignore-scripts "$HOME/Downloads/dsh-cleangpt-plugin-0.1.2.tgz"
+dsh plugin --profile desktop add --ignore-scripts "$HOME/Downloads/dsh-cleangpt-plugin-0.1.3.tgz"
 ```
 
 Windows PowerShell：
 
 ```powershell
-dsh plugin --profile desktop add --ignore-scripts "$HOME\Downloads\dsh-cleangpt-plugin-0.1.2.tgz"
+dsh plugin --profile desktop add --ignore-scripts "$HOME\Downloads\dsh-cleangpt-plugin-0.1.3.tgz"
 ```
 
 再启动 Desktop。不要用 npm 安装的 `dsh` 管理 `desktop`，它会拒绝；请使用 Desktop 自带命令或上面的插件界面。这里使用 DSH 内置 Electron/Node 与 pnpm，不要求另装系统 Node。[官方命令设置说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.1-rc.2/apps/desktop/README.zh.md#terminal-command)
@@ -62,11 +62,11 @@ dsh plugin --profile desktop add --ignore-scripts "$HOME\Downloads\dsh-cleangpt-
 已有 npm 版 DSH 时，使用 Node 24+、DSH 0.2.1-rc.2，并确保 `pnpm` 在 PATH。检查 `node --version`、`dsh --version`、`pnpm --version`；测试基线使用 pnpm 11.19.0。以下命令适用 macOS/Linux 终端和 Windows PowerShell，替换引号内绝对路径：
 
 ```sh
-dsh plugin --profile web add --ignore-scripts "/absolute/path/dsh-cleangpt-plugin-0.1.2.tgz"
+dsh plugin --profile web add --ignore-scripts "/absolute/path/dsh-cleangpt-plugin-0.1.3.tgz"
 dsh web
 ```
 
-Windows 路径例如 `"C:\Users\你的用户名\Downloads\dsh-cleangpt-plugin-0.1.2.tgz"`。其他已有 profile 改 `web` 为实际名称；Web 与 Desktop 不是同一个 profile。安装自动挂载 Host provider 与预编译浏览器 UI，内部模型 route 保持 `chatgpt-plan`。默认配置不需要手工 patch；自定义账号标签/authDir 时才参考 `example.cordis.patch.yml`，不要覆盖已有其他插件设置。
+Windows 路径例如 `"C:\Users\你的用户名\Downloads\dsh-cleangpt-plugin-0.1.3.tgz"`。其他已有 profile 改 `web` 为实际名称；Web 与 Desktop 不是同一个 profile。安装自动挂载 Host provider 与预编译浏览器 UI，内部模型 route 保持 `chatgpt-plan`。默认配置不需要手工 patch；自定义账号标签/authDir 时才参考 `example.cordis.patch.yml`，不要覆盖已有其他插件设置。
 
 ## 源码检查与构建（开发者备用）
 
@@ -177,6 +177,8 @@ config:
 测试中的 bearer/token/client ID/subject 全部是带 mock 标记的合成值，RSA 密钥仅在测试进程中临时生成；不包含保存的账号文件或真实授权。Git 公开范围为源码、测试、锁文件、MIT LICENSE 与使用配置；dist、安装包、认证目录、研究下载与本机日志均忽略。仓库未发布 npm，也不会自动安装 DSH profile 或自动发起登录。
 
 ## 升级与卸载
+
+本次安装包为 **0.1.3**。已有 0.1.2 的用户必须选用新文件名，不要把新内容覆盖为旧版同名 tarball 后反复安装：已验证 pnpm 可能继续使用旧解析缓存。
 
 升级：保存你需要的 profile 覆盖配置，使用同一插件界面安装新版 `.tgz`，或在**同一 profile** 重复上述 `add --ignore-scripts "新包绝对路径"`，然后重启。测试覆盖版本变化、重复安装不会重复挂载 bundle，以及已有配置/合成凭据不变。旧版若手工插入过同 id 的条目，只移除你曾添加的重复 insert，保留 `- id: dsh-cleangpt-plugin` 配置覆盖；不要重置整个 profile。
 
