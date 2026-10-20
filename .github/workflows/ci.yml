@@ -35,6 +35,14 @@ jobs:
           DSH_TEST_RUNTIME: ${{ runner.temp }}/dsh-runtime
           DSH_TEST_ARTIFACTS: ${{ runner.temp }}/cleangpt-artifacts
         run: npm run test:ui
+      - name: Synthetic browser failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ui-failure-${{ matrix.os }}-${{ github.sha }}
+          path: ${{ runner.temp }}/cleangpt-artifacts/*.png
+          if-no-files-found: ignore
+          retention-days: 7
   package:
     needs: test
     runs-on: ubuntu-latest

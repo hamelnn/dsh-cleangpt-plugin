@@ -1,5 +1,5 @@
 /** Install the packed plugin in an isolated DSH profile and run synthetic browser regression. */
-import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve, delimiter } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -10,7 +10,9 @@ import assert from 'node:assert/strict';
 const repo=fileURLToPath(new URL('..',import.meta.url));
 const runtime=process.env.DSH_TEST_RUNTIME;
 if(!runtime)throw new Error('Set DSH_TEST_RUNTIME to an isolated installation of @deepseek-ai/dsh@0.2.1-rc.2 and playwright');
-const root=await mkdtemp(join(tmpdir(),'cleangpt-ui-')), workspace=join(root,'workspace'), artifacts=resolve(process.env.DSH_TEST_ARTIFACTS ?? join(root,'artifacts'));
+// macOS tmpdir can spell /private/var as /var. Use the same canonical workspace
+// for Host startup and the picker so restart does not register a second alias.
+const root=await realpath(await mkdtemp(join(tmpdir(),'cleangpt-ui-'))), workspace=join(root,'workspace'), artifacts=resolve(process.env.DSH_TEST_ARTIFACTS ?? join(root,'artifacts'));
 await mkdir(workspace);await mkdir(artifacts,{recursive:true});await privateDirectory(join(root,'auth'));
 const env={...process.env,PATH:join(resolve(runtime),'node_modules/.bin')+delimiter+process.env.PATH,DSH_HOME:join(root,'home'),XDG_DATA_HOME:join(root,'xdg'),npm_config_cache:join(root,'npm-cache'),DSH_TEST_RUNTIME:resolve(runtime),DSH_TEST_WORKSPACE:workspace,DSH_TEST_ARTIFACTS:artifacts,DSH_TEST_LOG:join(root,'web.log'),DSH_TEST_CAPTURE:join(artifacts,'requests.jsonl')};
 const cli=join(resolve(runtime),'node_modules/@deepseek-ai/dsh/lib/bin.js');
