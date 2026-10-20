@@ -27,7 +27,12 @@ if ($env:DSH_CLEANGPT_ACL_OPERATION -eq 'create') {
 $attributes = [IO.File]::GetAttributes($path)
 if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Reparse points are not private credential storage' }
 $acl = if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) { [IO.Directory]::GetAccessControl($path) } else { [IO.File]::GetAccessControl($path) }
-if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $identity.Value) { throw 'Credential owner must be the current user' }
+$owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+$principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+# Elevated processes can create files owned by their default Administrators group.
+# Accept that owner only for an elevated administrator; the DACL stays private.
+$elevatedOwner = $owner -eq 'S-1-5-32-544' -and $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($owner -ne $identity.Value -and -not $elevatedOwner) { throw 'Credential owner must be the current user' }
 if (($attributes -band [IO.FileAttributes]::Directory) -ne 0 -and -not $acl.AreAccessRulesProtected) { throw 'Credential directory must have a protected DACL' }
 $rules = $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
 if ($rules.Count -eq 0) { throw 'Credential DACL must explicitly restrict access' }

@@ -14,7 +14,8 @@ const env={...process.env,PATH:join(resolve(runtime),'node_modules/.bin')+delimi
 const cli=join(resolve(runtime),'node_modules/@deepseek-ai/dsh/lib/bin.js');
 const run=(command,args)=>new Promise((yes,no)=>{const child=spawn(command,args,{cwd:repo,env,stdio:'inherit'});child.on('error',no);child.on('exit',code=>code===0?yes():no(new Error(`${command} exited ${code}`)));});
 await run('npm',['pack','--ignore-scripts']);
-await run(process.execPath,[cli,'plugin','--profile','web','add','--ignore-scripts','--registry=https://registry.npmjs.org',join(repo,'dsh-cleangpt-plugin-0.1.0.tgz')]);
+const packed = JSON.parse(await readFile(join(repo,'package.json'),'utf8'));
+await run(process.execPath,[cli,'plugin','--profile','web','add','--ignore-scripts','--registry=https://registry.npmjs.org',join(repo,`${packed.name}-${packed.version}.tgz`)]);
 await writeFile(join(root,'auth/default.json'),JSON.stringify({client_id:'mock-client',access_token:'mock-access',refresh_token:'mock-refresh',scope:'chatgpt.tokens.use.direct',expires_at:Date.now()+86400000}),{mode:0o600});
 const { Config } = await import(join(repo,'dist/index.js'));
 const config=Config({authDir:join(root,'auth'),allowUncappedAuxiliary:true});
