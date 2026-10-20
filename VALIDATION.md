@@ -45,3 +45,9 @@ CI 在 Linux、macOS 与 Windows 上运行 unit/type/build/pack（包括各平�
 真实调用复现：function_call 的 output_item.added、参数增量及 output_item.done 均完整，response.completed.output 却为 []。原实现因此误报 Missing or duplicate tool items in completed response。现在仅在终态快照为空时，使用按 output_index 排序的完整 item.done 快照恢复输出与 replay；工具名称、namespace、ID、参数及完成状态仍核验，非空终态的缺失或冲突仍拒绝。
 
 本机 65 项测试通过，覆盖空终态工具快照及后续 replay。真实 gpt-6.1-sol 通过本机 HTTP 代理完成两轮合成 ping 工具往返：首轮 tool-calls，提交合成 OK 结果后第二轮 stop 并回复 The tool returned: OK。没有执行真实业务工具。
+
+## 中文模型页及代理设置（0.1.2）
+
+模型页授权状态、按钮、提示以及加速菜单完成中文适配；推理档位通过原生模型元数据提供中文名称，请求标识保持原值。模型页新增可编辑的 HTTP/HTTPS 代理地址（含端口），读取现有 profile 默认值，持久保存到独立 cleangpt_network 域，并在下一次请求动态使用。
+
+67 项本机测试通过，覆盖无效代理拒绝、存储重新打开后恢复、空值覆盖以及模型请求切换代理。已在本机 DSH 模型页验证显示原有 7897 地址、点击保存得到成功提示，原生模型按钮显示中文推理等级。

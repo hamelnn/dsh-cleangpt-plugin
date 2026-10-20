@@ -247,7 +247,7 @@ test('explicit model proxy uses a per-request dispatcher for catalog and inferen
 });
 test('invalid explicit proxies fail before credential lookup or network use', () => {
   for (const proxyUrl of ['7897', 'socks5://127.0.0.1:7897', 'http://user:password@localhost:7897', 'http://localhost:7897/path'])
-    assert.throws(() => new ChatGPTPlanAdapter({ proxyUrl }), /proxyUrl must/);
+    assert.throws(() => new ChatGPTPlanAdapter({ proxyUrl }), /代理地址/);
 });
 
 test('empty terminal output uses ordered complete item snapshots and replays tool results', async () => {
@@ -265,4 +265,14 @@ test('empty terminal output uses ordered complete item snapshots and replays too
   assert.deepEqual(finish.replayState.response.output, [reasoning, item]);
   const body = requestBody({ ...options, tools, messages: [{ role: 'assistant', content: [{ type: 'tool-call', id: item.call_id, name: 'echo', arguments: '{}' }], source: { provider: options.provider, model: options.model, replayState: finish.replayState } }, { role: 'tool', toolCallId: item.call_id, content: [{ type: 'text', text: 'OK' }] }] }, {});
   assert.deepEqual(body.input, [reasoning, item, { type: 'function_call_output', call_id: item.call_id, output: 'OK' }]);
+});
+
+test('saved proxy changes affect subsequent requests without changing an in-flight dispatcher', async () => {
+ let proxyUrl='http://127.0.0.1:7897'; const seen=[];
+ const a=new ChatGPTPlanAdapter({getProxyUrl:async()=>proxyUrl,token:async()=> 'mock',fetch:async(_u,init)=>{seen.push(init.dispatcher);return sse([delta,done()]);}});
+ try {
+  await collect(a.stream(options)); proxyUrl='http://127.0.0.1:7898'; await collect(a.stream(options));
+  assert.ok(seen[0]); assert.ok(seen[1]); assert.notEqual(seen[0],seen[1]);
+  proxyUrl=''; await collect(a.stream(options)); assert.equal(seen[2],undefined);
+ }finally{await a.dispose();}
 });

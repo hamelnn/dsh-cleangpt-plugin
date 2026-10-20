@@ -1,6 +1,8 @@
 /** Native DSH Responses provider. DSH retains its loop and executes all tools. */
 import OpenAI from 'openai';
 import { ProxyAgent } from 'undici';
+import { effortLabel } from './labels.js';
+import { normalizeProxy, NetworkSettings, networkDomain } from './network.js';
 import type { ResponseCreateParamsStreaming, ResponseInput, ResponseOutputItem } from 'openai/resources/responses/responses.js';
 import { LlmAdapter, LlmError, ToolCallId, ProviderRequestId, attributionHeaders, projectToolUpdates, ReasoningEffortId, resolveRetryPolicy } from '@deepseek-ai/dsh-llm';
 import type { GenerateOptions, StreamChunk, ContentBlock, LlmModelInfo } from '@deepseek-ai/dsh-llm';
@@ -25,6 +27,7 @@ export const Config = z.object({
 });
 interface Options {
   proxyUrl?: string;
+  getProxyUrl?: () => Promise<string>;
   account?: string; authDir?: string; reasoningEffort?: string; serviceTier?: string; reasoningEfforts?: string[];
   allowUncappedAuxiliary?: boolean; onWarning?: (message: string) => void;
   token?: (signal?: AbortSignal) => Promise<string>;
@@ -94,26 +97,22 @@ function usageChunk(usage: NonNullable<import('openai/resources/responses/respon
 /** Official SDK handles SSE parsing; this layer maps events to DSH chunks. */
 export class ChatGPTPlanAdapter extends LlmAdapter {
   private readonly requestSpeeds = new WeakMap<object, Promise<string>>();
-  private readonly proxy?: ProxyAgent;
+  private readonly proxies = new Map<string, ProxyAgent>();
   constructor(private readonly config: Options = {}) {
     super();
-    if (config.proxyUrl?.trim()) {
-      let url: URL;
-      try { url = new URL(config.proxyUrl.trim()); }
-      catch { throw new LlmError('proxyUrl must be an HTTP/HTTPS proxy URL', 'INVALID_PROXY'); }
-      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash)
-        throw new LlmError('proxyUrl must be an HTTP/HTTPS proxy origin without credentials, path, query or fragment', 'INVALID_PROXY');
-      this.proxy = new ProxyAgent(url.href);
-    }
+    if (config.proxyUrl) normalizeProxy(config.proxyUrl);
   }
-  async dispose() { await this.proxy?.close(); }
+  async dispose() { await Promise.all([...this.proxies.values()].map(proxy => proxy.close())); }
   providerInfo(provider: string) { return { id: provider, name: `dsh-cleangpt-plugin (${this.config.account ?? 'default'})` }; }
   private async client(signal?: AbortSignal) {
+    const proxyUrl = normalizeProxy(await this.config.getProxyUrl?.() ?? this.config.proxyUrl ?? '');
+    let proxy = this.proxies.get(proxyUrl);
+    if (proxyUrl && !proxy) { proxy = new ProxyAgent(proxyUrl); this.proxies.set(proxyUrl, proxy); }
     let token: string;
     try { token = await (this.config.token?.(signal) ?? accessToken(this.config.authDir, this.config.account, signal)); }
     catch (error) { if (error instanceof AuthError) throw new LlmError(error.message, error.code, { cause: error }); throw error; }
     return new OpenAI({ apiKey: token, baseURL: API, maxRetries: 0, timeout: 300_000,
-      fetch: this.proxy ? (input, init) => (this.config.fetch ?? globalThis.fetch)(input, { ...init, dispatcher: this.proxy } as RequestInit) : this.config.fetch,
+      fetch: proxy ? (input, init) => (this.config.fetch ?? globalThis.fetch)(input, { ...init, dispatcher: proxy } as RequestInit) : this.config.fetch,
       organization: null, project: null, logLevel: 'off', fetchOptions: { redirect: 'error' }, defaultHeaders: attributionHeaders() });
   }
   async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
@@ -127,7 +126,7 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
     signal?.throwIfAborted();
     // Catalog membership does not establish entitlement; unknown slugs can reach the server.
     const efforts = [...new Set([...(this.config.reasoningEfforts ?? []), ...(this.config.reasoningEffort ? [this.config.reasoningEffort] : [])])];
-    return { provider, id: model, name: model, inputModalities: ['text'] as const, ...(efforts.length ? { reasoning: { efforts: efforts.map(id => ({ id: ReasoningEffortId(id), name: `${id} (server validates)` })), ...(this.config.reasoningEffort ? { defaultEffort: ReasoningEffortId(this.config.reasoningEffort) } : {}) } } : {}) };
+    return { provider, id: model, name: model, inputModalities: ['text'] as const, ...(efforts.length ? { reasoning: { efforts: efforts.map(id => ({ id: ReasoningEffortId(id), name: effortLabel(id) })), ...(this.config.reasoningEffort ? { defaultEffort: ReasoningEffortId(this.config.reasoningEffort) } : {}) } } : {}) };
   }
   async *stream(options: GenerateOptions): AsyncGenerator<StreamChunk> {
     options.signal?.throwIfAborted();
@@ -238,13 +237,16 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => async () => { await (await domain).close(); });
   const sessions = domain.then(domain => domain.table('sessions'));
   sessions.catch(error => ctx.logger(name).error('Cannot open session speed storage: %s', error instanceof Error ? error.message : 'storage failure'));
-  ctx.plugin(scope => { new Controls(scope, config, sessions); });
+  const network = ctx.storageDomain.open(networkDomain);
+  ctx.effect(() => async () => { await (await network).close(); });
+  const networkSettings = new NetworkSettings(network.then(domain => domain.table('settings')), config.proxyUrl);
+  ctx.plugin(scope => { new Controls(scope, config, sessions, undefined, networkSettings); });
   const requests = new RequestSpeeds(sessions);
   ctx.on('agent/request', async ({ agent, turn, step, signal }, next) => {
     await requests.capture(agent.session.id, turn, step, signal);
     return next();
   });
-  const adapter = new ChatGPTPlanAdapter({ ...config, sessionSpeed: async (id, signal) =>
+  const adapter = new ChatGPTPlanAdapter({ ...config, getProxyUrl: async () => (await networkSettings.get()).proxyUrl, sessionSpeed: async (id, signal) =>
     requests.read(id, signal),
     onWarning: message => ctx.logger(name).warn(message) });
   ctx.effect(() => () => adapter.dispose());

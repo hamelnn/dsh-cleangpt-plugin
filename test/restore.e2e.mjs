@@ -11,12 +11,12 @@ try {
  const group=page.locator('[role="treeitem"][data-row-key^="workspace:"]').filter({has:page.getByText('workspace',{exact:true})});
  await group.waitFor();if(await group.getAttribute('aria-expanded')==='false')await group.click();
  await page.getByRole('treeitem').filter({hasText:'Session A'}).click();
- await page.getByRole('button',{name:/reasoning effort high/}).waitFor();
- const speed=page.getByRole('button',{name:/^ChatGPT speed:/});
+ await page.getByRole('button',{name:/reasoning effort 高/}).waitFor();
+ const speed=page.getByRole('button',{name:/^ChatGPT 加速：/});
  await page.waitForFunction(()=>document.querySelector('[data-cleangpt-speed]')?.getAttribute('data-cleangpt-speed')==='priority');
  assert.equal(await speed.getAttribute('data-cleangpt-speed'),'priority');
  await page.getByRole('treeitem').filter({hasText:'Session B'}).click();
- await page.getByRole('button',{name:/reasoning effort low/}).waitFor();
+ await page.getByRole('button',{name:/reasoning effort 低/}).waitFor();
  await page.waitForFunction(()=>document.querySelector('[data-cleangpt-speed]')?.getAttribute('data-cleangpt-speed')==='default');
  assert.equal(await speed.getAttribute('data-cleangpt-speed'),'default');
  await page.screenshot({path:`${process.env.DSH_TEST_ARTIFACTS}/host-restart-restored.png`});
