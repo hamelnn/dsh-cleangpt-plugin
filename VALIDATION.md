@@ -31,3 +31,11 @@ CI 在 Linux、macOS 与 Windows 上运行 unit/type/build/pack（包括各平�
 ## Windows 适配验证（0.1.1）
 
 本机 Node 24.22.0 / Windows：严格编译与 60 项合成测试。新增 NTFS 私有 DACL 创建、Unicode 与特殊字符路径、Everyone 可读文件拒绝、继承权限拒绝、目录 junction 拒绝。Windows 浏览器启动由合成子进程替身验证；没有真实登录、注册或推理。Unix 保留原有 uid、0700/0600 和 O_NOFOLLOW 检查。
+
+## 真实授权后调用修复（2026-10-20）
+
+使用本机用户已完成的授权，以最小合成提示验证官方 public Responses 路由：显式 `service_tier: auto` 返回 HTTP 400 / `Unsupported service_tier: auto`；省略该字段后收到 HTTP 200 与 `response.completed`。修复后通过 DSH 自身代理初始化和完整 adapter 流式调用返回 `OK` 与 finish。Auto 现在表示省略字段；其他显式选择仍原样提交，不自动降级。
+
+新增默认 Auto 请求、非标准 `{detail: ...}` 错误和网络连接失败回归。63 项本机测试通过。该验证仅覆盖此账号的单轮文本调用，不代表所有候选模型、effort、tier 或真实工具执行均已验证；未提交或打包任何凭据。直接联网超时、使用本机已有 HTTP/HTTPS 代理成功。
+
+独立模型代理：`proxyUrl` 使用插件自己的 HTTP/HTTPS CONNECT dispatcher，仅覆盖 catalog/Responses，Host 全局设置不变。Windows 上不启用全局代理初始化，直接设置 `http://127.0.0.1:7897` 后成功获取 7 个可见模型，并完成 `gpt-6.1-sol` 单轮真实调用，输出 `OK`。本机 65 项测试通过，包含代理参数校验与 catalog/Responses 共用私有 dispatcher。

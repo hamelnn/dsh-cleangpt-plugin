@@ -217,3 +217,36 @@ test('published package, lockfile, plugin identifier and CLI share the requested
   assert.equal(plugin.name, pkg.name); assert.deepEqual(Object.keys(pkg.bin), [pkg.name]);
   assert.equal(basename(plugin.Config({}).authDir), 'dsh-cleangpt-plugin');
 });
+
+test('Auto omits unsupported literal service_tier on the default adapter path', async () => {
+  await collect(adapter([delta, done()], (_url, init) => assert.equal('service_tier' in JSON.parse(init.body), false)).stream(options));
+  assert.equal('service_tier' in requestBody(options, { serviceTier: 'auto' }), false);
+});
+test('direct admission detail is visible and a 400 is not retried', async () => {
+  let calls = 0;
+  const a = new ChatGPTPlanAdapter({ token: async () => 'mock', fetch: async () => { calls++; return Response.json({ detail: 'Unsupported service_tier: auto' }, { status: 400 }); } });
+  await assert.rejects(collect(a.stream(options)), e => e.failure.status === 400 && /Unsupported service_tier: auto/.test(e.message));
+  assert.equal(calls, 1);
+});
+test('transport failures identify the connection error instead of HTTP unknown', async () => {
+  const a = new ChatGPTPlanAdapter({ token: async () => 'mock', fetch: async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_CONNECT_TIMEOUT' } }); } });
+  await assert.rejects(collect(a.stream(options)), e => /connection failed.*UND_ERR_CONNECT_TIMEOUT/.test(e.message) && !/HTTP unknown/.test(e.message));
+});
+
+test('explicit model proxy uses a per-request dispatcher for catalog and inference', async () => {
+  const originalFetch = globalThis.fetch;
+  const dispatchers = [];
+  const a = new ChatGPTPlanAdapter({ proxyUrl: 'http://127.0.0.1:7897', token: async () => 'mock', fetch: async (url, init) => {
+    dispatchers.push(init.dispatcher);
+    return String(url).endsWith('/models') ? Response.json({ models: [] }) : sse([delta, done()]);
+  } });
+  try {
+    await a.listModels('chatgpt-plan'); await collect(a.stream(options));
+    assert.ok(dispatchers[0]); assert.equal(dispatchers[0], dispatchers[1]);
+    assert.equal(globalThis.fetch, originalFetch);
+  } finally { await a.dispose(); }
+});
+test('invalid explicit proxies fail before credential lookup or network use', () => {
+  for (const proxyUrl of ['7897', 'socks5://127.0.0.1:7897', 'http://user:password@localhost:7897', 'http://localhost:7897/path'])
+    assert.throws(() => new ChatGPTPlanAdapter({ proxyUrl }), /proxyUrl must/);
+});

@@ -59,7 +59,7 @@ node dist/auth.js logout default
 
 - 模型：用相同 OAuth access token 读取官方 `/v1/models` 的 `models` 数组，按服务端顺序展示 `visibility: list`，显示 `display_name`，请求用 `slug`。不硬编码模型名单。底层也允许显式模型 ID，由服务端验证。
 - 思考强度：`reasoningEffort` 默认省略；任意显式字符串原样作为 `reasoning.effort`。`reasoningEfforts` 默认列出公开 Responses 候选 `none/minimal/low/medium/high/xhigh/max`，也允许任意未来字符串；这是放进 DSH 原生选择器的候选列表，**不是已验证的服务端能力**。可填写服务端正式支持的新值；插件不改写、不降档。配置默认强度会注册并在 DSH 准备请求时记录。
-- 加速：输入框旁的同一个 DSH 原生 Speed 菜单默认提供 `auto/default/fast/ultrafast/priority/flex/scale`，逐项原样发送 `service_tier`。Auto 是新会话及无 sessionId 调用的默认值；其他选项均标明 server validates。Fast 使用 `fast`，Priority 使用 `priority`，保留两种写法而不改写；Ultrafast 使用 `ultrafast`。`serviceTiers` 可配置其他/未来字符串；兼容的 `serviceTier` 单值也会加入同一菜单候选，不再作为全局默认。已保存的候选即使随后从配置移除，仍按原字符串显示和恢复。插件不新增 effort 控件。
+- 加速：输入框旁的同一个 DSH 原生 Speed 菜单默认提供 `auto/default/fast/ultrafast/priority/flex/scale`，Auto 省略 `service_tier`，由服务器选择；其余选项原样发送。Auto 是新会话及无 sessionId 调用的默认值；其他选项均标明 server validates。Fast 使用 `fast`，Priority 使用 `priority`，保留两种写法而不改写；Ultrafast 使用 `ultrafast`。`serviceTiers` 可配置其他/未来字符串；兼容的 `serviceTier` 单值也会加入同一菜单候选，不再作为全局默认。已保存的候选即使随后从配置移除，仍按原字符串显示和恢复。插件不新增 effort 控件。
 - 官方 SIWC 文档目前没有定义完整 effort/tier 能力目录 schema，因此不猜测 catalog 中的未文档化字段，也不声称“所有账号支持所有模型和强度”。只有收到真实 `response.completed` 才算本次资格与推理成功。目录出现模型、成功登录、或 mock 通过均不能证明有资格。
 
 可选配置示例：
@@ -135,3 +135,15 @@ config:
 卸载：如需撤销授权，先显式执行 `dsh-cleangpt-plugin logout ACCOUNT`；随后 `dsh plugin --profile web remove dsh-cleangpt-plugin`，移除该 profile 中插件的配置覆盖并重启。卸载不自动删除独立凭据目录或持久化会话偏好；确认不再使用后可手动清理插件专属数据。不会改动其他应用凭据。
 
 公开候选依据（2026-10-19 核对）：[Reasoning guide](https://developers.openai.com/api/docs/guides/reasoning)、[Fast mode](https://developers.openai.com/api/docs/guides/fast-mode)、[Ultrafast mode（含 HTTP）](https://developers.openai.com/api/docs/guides/ultrafast-mode)，以及已锁定官方 OpenAI SDK 7.19.0 的 Responses ServiceTier 类型。API 文档不是 SIWC/plan 资格证明；每个模型可能拒绝部分 effort/tier。`ultra` 不在默认 effort 候选中，不声称官方 SIWC 支持。服务端拒绝时保留实际错误码、参数和请求 ID，不做候选降档或静默替换。
+
+### 独立模型代理
+
+可在目标 profile 的 `cordis.patch.yml` 设置：
+
+```yaml
+- id: dsh-cleangpt-plugin
+  config:
+    proxyUrl: http://127.0.0.1:7897
+```
+
+该配置仅用于本插件的模型列表与 Responses 推理请求，优先于 DSH 的全局代理。留空沿用 Host 网络设置；支持 HTTP/HTTPS 代理，不接受 SOCKS URL、内嵌凭据或路径。OAuth 登录和续期仍使用 Host 网络设置。插件卸载时关闭自己的连接池，不修改其他插件的代理。代理连接失败会报错，不自动改为直连。

@@ -36,6 +36,7 @@
   "dependencies": {
     "jose": "6.2.12",
     "openai": "7.19.0",
+    "undici": "7.30.1",
     "zod": "4.4.3"
   },
   "peerDependencies": {

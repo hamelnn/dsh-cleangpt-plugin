@@ -1,5 +1,6 @@
 /** Native DSH Responses provider. DSH retains its loop and executes all tools. */
 import OpenAI from 'openai';
+import { ProxyAgent } from 'undici';
 import type { ResponseCreateParamsStreaming, ResponseInput, ResponseOutputItem } from 'openai/resources/responses/responses.js';
 import { LlmAdapter, LlmError, ToolCallId, ProviderRequestId, attributionHeaders, projectToolUpdates, ReasoningEffortId, resolveRetryPolicy } from '@deepseek-ai/dsh-llm';
 import type { GenerateOptions, StreamChunk, ContentBlock, LlmModelInfo } from '@deepseek-ai/dsh-llm';
@@ -11,10 +12,11 @@ import { Controls, RequestSpeeds, sessionDomain, defaultServiceTiers } from './c
 
 export const name = 'dsh-cleangpt-plugin';
 export const inject = ['llm', 'storageDomain'];
-export interface Config { account: string; authDir: string; reasoningEffort: string; reasoningEfforts: string[]; serviceTiers: string[]; serviceTier: string; allowUncappedAuxiliary: boolean }
+export interface Config { account: string; authDir: string; proxyUrl: string; reasoningEffort: string; reasoningEfforts: string[]; serviceTiers: string[]; serviceTier: string; allowUncappedAuxiliary: boolean }
 export const Config = z.object({
   account: z.string().default('default'),
   authDir: z.string().default(defaultDirectory),
+  proxyUrl: z.string().default(''),
   reasoningEffort: z.string().default(''),
   reasoningEfforts: z.array(z.string()).default(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']),
   serviceTiers: z.array(z.string()).default(defaultServiceTiers),
@@ -22,6 +24,7 @@ export const Config = z.object({
   allowUncappedAuxiliary: z.boolean().default(false),
 });
 interface Options {
+  proxyUrl?: string;
   account?: string; authDir?: string; reasoningEffort?: string; serviceTier?: string; reasoningEfforts?: string[];
   allowUncappedAuxiliary?: boolean; onWarning?: (message: string) => void;
   token?: (signal?: AbortSignal) => Promise<string>;
@@ -71,8 +74,8 @@ export function requestBody(options: GenerateOptions, config: Options): Response
     model: options.model, input, store: false, stream: true,
     include: ['reasoning.encrypted_content'],
     ...(effort ? { reasoning: { effort: effort as NonNullable<ResponseCreateParamsStreaming['reasoning']>['effort'] } } : {}),
-    // Opaque configured values intentionally reach OpenAI unchanged, including future values.
-    ...(config.serviceTier ? { service_tier: config.serviceTier as ResponseCreateParamsStreaming['service_tier'] } : {}),
+    // Auto means server-selected routing. The plan endpoint rejects literal "auto".
+    ...(config.serviceTier && config.serviceTier !== 'auto' ? { service_tier: config.serviceTier as ResponseCreateParamsStreaming['service_tier'] } : {}),
     ...(projected.tools?.length ? { tools: [{ type: 'namespace', name: NAMESPACE, description: 'Tools executed by DeepSeek Harness', tools: projected.tools.map(tool => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.parameters, strict: false })) }] } : {}),
   };
 }
@@ -91,14 +94,27 @@ function usageChunk(usage: NonNullable<import('openai/resources/responses/respon
 /** Official SDK handles SSE parsing; this layer maps events to DSH chunks. */
 export class ChatGPTPlanAdapter extends LlmAdapter {
   private readonly requestSpeeds = new WeakMap<object, Promise<string>>();
-  constructor(private readonly config: Options = {}) { super(); }
+  private readonly proxy?: ProxyAgent;
+  constructor(private readonly config: Options = {}) {
+    super();
+    if (config.proxyUrl?.trim()) {
+      let url: URL;
+      try { url = new URL(config.proxyUrl.trim()); }
+      catch { throw new LlmError('proxyUrl must be an HTTP/HTTPS proxy URL', 'INVALID_PROXY'); }
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash)
+        throw new LlmError('proxyUrl must be an HTTP/HTTPS proxy origin without credentials, path, query or fragment', 'INVALID_PROXY');
+      this.proxy = new ProxyAgent(url.href);
+    }
+  }
+  async dispose() { await this.proxy?.close(); }
   providerInfo(provider: string) { return { id: provider, name: `dsh-cleangpt-plugin (${this.config.account ?? 'default'})` }; }
   private async client(signal?: AbortSignal) {
     let token: string;
     try { token = await (this.config.token?.(signal) ?? accessToken(this.config.authDir, this.config.account, signal)); }
     catch (error) { if (error instanceof AuthError) throw new LlmError(error.message, error.code, { cause: error }); throw error; }
     return new OpenAI({ apiKey: token, baseURL: API, maxRetries: 0, timeout: 300_000,
-      fetch: this.config.fetch, organization: null, project: null, logLevel: 'off', fetchOptions: { redirect: 'error' }, defaultHeaders: attributionHeaders() });
+      fetch: this.proxy ? (input, init) => (this.config.fetch ?? globalThis.fetch)(input, { ...init, dispatcher: this.proxy } as RequestInit) : this.config.fetch,
+      organization: null, project: null, logLevel: 'off', fetchOptions: { redirect: 'error' }, defaultHeaders: attributionHeaders() });
   }
   async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
     const client = await this.client();
@@ -192,7 +208,17 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
       }
       if (!completed) throw new LlmError('Stream ended before response.completed', 'STREAM_TRUNCATED');
     } catch (error) {
-      if (error instanceof OpenAI.APIError) throw new LlmError(`ChatGPT plan HTTP ${error.status ?? 'unknown'}: ${error.code ?? 'API_ERROR'}${error.param ? ` (parameter: ${error.param})` : ''}`, error.status === 503 ? 'SERVER_UNAVAILABLE' : error.code ?? 'API_ERROR', { status: error.status, requestId: error.requestID ? ProviderRequestId(error.requestID) : undefined, cause: error });
+      if (error instanceof OpenAI.APIConnectionError) {
+        const cause = error.cause as { code?: string; cause?: { code?: string } } | undefined;
+        const code = cause?.code ?? cause?.cause?.code;
+        throw new LlmError(`ChatGPT plan connection failed${code ? ` (${code})` : ''}; check the DSH Host network and HTTP/HTTPS proxy settings`, 'CONNECTION_ERROR', { cause: error });
+      }
+      if (error instanceof OpenAI.APIError) {
+        // Admission failures may be {detail: "..."} rather than the standard {error: ...}.
+        const payload = error.error as { detail?: unknown; message?: unknown } | undefined;
+        const detail = typeof payload?.detail === 'string' ? payload.detail : typeof payload?.message === 'string' ? payload.message : '';
+        throw new LlmError(`ChatGPT plan HTTP ${error.status ?? 'unknown'}: ${error.code ?? 'API_ERROR'}${error.param ? ` (parameter: ${error.param})` : ''}${detail ? ` — ${detail.slice(0, 1000)}` : ''}`, error.status === 503 ? 'SERVER_UNAVAILABLE' : error.code ?? 'API_ERROR', { status: error.status, requestId: error.requestID ? ProviderRequestId(error.requestID) : undefined, cause: error });
+      }
       throw error;
     } finally { controller.abort(); }
   }
@@ -213,5 +239,6 @@ export function apply(ctx: Context, config: Config): void {
   const adapter = new ChatGPTPlanAdapter({ ...config, sessionSpeed: async (id, signal) =>
     requests.read(id, signal),
     onWarning: message => ctx.logger(name).warn(message) });
+  ctx.effect(() => () => adapter.dispose());
   ctx.effect(() => ctx.llm.registerAdapter([ROUTE], adapter));
 }

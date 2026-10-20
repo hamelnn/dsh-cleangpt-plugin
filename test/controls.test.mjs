@@ -102,7 +102,7 @@ test('installed bundle exposes all public efforts and tiers; each pair and confi
   const model=await a.resolveModel('chatgpt-plan','mock-model');assert.deepEqual(model.reasoning.efforts.map(x=>x.id),[...efforts,'future-effort']);assert.ok(model.reasoning.efforts.every(x=>x.name.endsWith('(server validates)')));
   for(const tier of [...tiers,'future-tier','legacy-tier'])for(const effort of [...efforts,'future-effort']){
    await c.setSpeed('A',tier);await assert.rejects(Array.fromAsync(a.stream({sessionId:'A',provider:'chatgpt-plan',model:'mock-model',reasoningEffort:effort,messages:[]})));
-   assert.equal(sent.at(-1).service_tier,tier);assert.equal(sent.at(-1).reasoning.effort,effort);
+   assert.equal(sent.at(-1).service_tier,tier === 'auto' ? undefined : tier);assert.equal(sent.at(-1).reasoning.effort,effort);
   }
   const view=await c.watchSpeed('A','',new AbortController().signal);assert.ok(view.choices.includes('future-tier'));assert.ok(view.choices.includes('legacy-tier'));
  }finally{await h.close();}
