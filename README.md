@@ -2,7 +2,7 @@
 
 DSH 原生模型插件，通过 OpenAI 官方 Sign in with ChatGPT（SIWC）使用自己授权的 ChatGPT plan。请求直达 `https://api.openai.com/v1/responses`；保留 DeepSeek Harness 的主循环、工具执行、会话日志与取消机制。
 
-**当前状态：实验性实现，严格编译与 mock 测试通过；真实注册、登录、模型资格与订阅推理尚未验证。** 不包含任何真实凭据。
+**当前状态：实验性插件，适配 DSH 0.2.1-rc.2。** 已有 Windows 单账号真实调用记录，不能推及所有账号、模型或档位；本轮自动化只使用隔离 profile 和合成凭据。完整证据与边界见 [VALIDATION.md](VALIDATION.md)。不包含任何真实凭据。
 
 ## 架构与范围
 
@@ -12,29 +12,77 @@ DSH 原生模型插件，通过 OpenAI 官方 Sign in with ChatGPT（SIWC）使�
 
 优先评估过官方 DSH `PiAiAdapter`：其公开构造参数没有暴露本路由需要的请求转换钩子。直接使用 OpenAI SDK 的薄适配层比引入并改造整个 pi-ai 路由更小，也能明确处理 namespace、完整历史和流中失败。
 
-## 源码检查与构建
+## 最快安装：macOS / Windows 桌面版
 
-在解压的源码目录运行（只安装开发依赖，不启用 DSH 插件）：
+不需要修改 YAML，也不需要编译源码、安装全局 Node/pnpm 或运行 GitHub 仓库安装脚本。使用 DSH **0.2.1-rc.2**；其他版本先检查兼容性，不建议绕过版本检查。macOS 与 Windows 使用同一个预编译 `.tgz` 包。
+
+1. 在本仓库的 [Actions → CI](https://github.com/hamelnn/dsh-cleangpt-plugin/actions/workflows/ci.yml) 选择你已审阅提交的**完整绿色运行**，下载 `dsh-cleangpt-plugin-提交SHA` artifact。GitHub 下载 artifact 需要登录，保留 30 天。解压外层 ZIP，里面是 `dsh-cleangpt-plugin-0.1.2.tgz`、同名 `.sha256` 和 `package-manifest.json`。不要再解压 `.tgz`，也不要用 GitHub 的 Source code.zip 代替。这个流程不发布 npm 或 GitHub Release；旧 CI 运行没有此 artifact 时，可以按下文源码构建。
+2. 在 DSH 侧边栏打开「插件」→「添加插件」→「安装第三方插件」，输入 `.tgz` 在**运行 DSH 的电脑**上的绝对路径，例如 `/Users/你的用户名/Downloads/dsh-cleangpt-plugin-0.1.2.tgz` 或 `C:\Users\你的用户名\Downloads\dsh-cleangpt-plugin-0.1.2.tgz`。在界面输入路径时不要加引号。按界面提示确认安装并重载/重启。
+3. 打开 Settings → Models，看到「ChatGPT 订阅」卡片即已装载。未登录是正常状态，安装不会自动登录。你决定授予持续访问后，再点「使用 ChatGPT 授权登录」。授权页在 **Host 电脑的系统浏览器**打开，可取消或重新授权。
+
+以上 Desktop 菜单和本地 tarball 能力依据 [官方 Desktop 文档](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.1-rc.2/apps/desktop/README.zh.md) 与 [插件安装参数](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.1-rc.2/packages/boot/plugin-manager/src/install-spec.ts#L61-L76)。CI 验证三系统下同一包管理器与 Web Host，不冒充 Electron 桌面窗口实测。
+
+### 可选：校验下载包
+
+在下载目录运行，比较输出与 `.sha256` 文件内容。SHA-256 用于检查完整性，不代替核对来源和提交。
+
+macOS：
+
+```sh
+shasum -a 256 -c dsh-cleangpt-plugin-0.1.2.tgz.sha256
+```
+
+Windows PowerShell：
+
+```powershell
+Get-FileHash .\dsh-cleangpt-plugin-0.1.2.tgz -Algorithm SHA256
+Get-Content .\dsh-cleangpt-plugin-0.1.2.tgz.sha256
+```
+
+### 可选：用桌面版自带 dsh 命令安装
+
+先启动过 Desktop 一次，在应用菜单「管理 dsh 命令…」安装命令，打开**新终端**执行 `dsh --version`。macOS 安装命令可能有系统权限提示，Windows 写入当前用户 PATH；这些是 DSH 自己的操作。**完全退出 Desktop**（关闭窗口可能只是隐藏），然后执行与你系统相符的一条：
+
+macOS：
+
+```sh
+dsh plugin --profile desktop add --ignore-scripts "$HOME/Downloads/dsh-cleangpt-plugin-0.1.2.tgz"
+```
+
+Windows PowerShell：
+
+```powershell
+dsh plugin --profile desktop add --ignore-scripts "$HOME\Downloads\dsh-cleangpt-plugin-0.1.2.tgz"
+```
+
+再启动 Desktop。不要用 npm 安装的 `dsh` 管理 `desktop`，它会拒绝；请使用 Desktop 自带命令或上面的插件界面。这里使用 DSH 内置 Electron/Node 与 pnpm，不要求另装系统 Node。[官方命令设置说明](https://github.com/deepseek-ai/deepseek-harness/blob/dsh-v0.2.1-rc.2/apps/desktop/README.zh.md#terminal-command)
+
+### Web / CLI 用户
+
+已有 npm 版 DSH 时，使用 Node 24+、DSH 0.2.1-rc.2，并确保 `pnpm` 在 PATH。检查 `node --version`、`dsh --version`、`pnpm --version`；测试基线使用 pnpm 11.19.0。以下命令适用 macOS/Linux 终端和 Windows PowerShell，替换引号内绝对路径：
+
+```sh
+dsh plugin --profile web add --ignore-scripts "/absolute/path/dsh-cleangpt-plugin-0.1.2.tgz"
+dsh web
+```
+
+Windows 路径例如 `"C:\Users\你的用户名\Downloads\dsh-cleangpt-plugin-0.1.2.tgz"`。其他已有 profile 改 `web` 为实际名称；Web 与 Desktop 不是同一个 profile。安装自动挂载 Host provider 与预编译浏览器 UI，内部模型 route 保持 `chatgpt-plan`。默认配置不需要手工 patch；自定义账号标签/authDir 时才参考 `example.cordis.patch.yml`，不要覆盖已有其他插件设置。
+
+## 源码检查与构建（开发者备用）
+
+源码构建需要 Node 24+。在仓库目录运行，默认不会安装插件到任何 DSH profile：
 
 ```sh
 npm ci --ignore-scripts --registry=https://registry.npmjs.org
 npm test
-npm pack --ignore-scripts
+npm run pack:plugin
 ```
 
-Git 仓库与源码包保留 `package-lock.json`，可用 `npm ci` 重建。可安装 tgz 同时包含已编译 `dist`、源码、测试和配置示例；npm 打包规则不包含 package-lock。要求 Node 24+。支持 Linux、macOS 和 Windows；Windows 使用系统自带的 Windows PowerShell 5.1 检查 NTFS ACL，无需管理员权限。CI 在三个系统运行编译与 mock 测试，真实账号授权与推理仍需单独验证。
+安装包和校验文件写入 `artifacts/`。打包会检查预编译 Host/client、bundle、许可文件和包内容，不包含账号、node_modules、日志或 profile；没有安装生命周期脚本。Git 源码含锁文件，可用 `npm ci` 重建；npm tarball 按 npm 规则不含 package-lock。普通用户只需预编译包，无须运行以上命令。不要直接 `add github:hamelnn/dsh-cleangpt-plugin`：仓库不提交 dist，也不依赖在线安装脚本编译。
 
-## 手动安装与授权
+Windows 凭据检查使用系统自带的 Windows PowerShell 5.1 和 NTFS ACL，无需管理员权限。不要为了安装插件更改 PowerShell 执行策略、关闭系统安全功能或放宽凭据目录权限。
 
-先审阅代码。只有决定安装时，才运行如下命令，将本地包加到你选定的 DSH profile：
-
-```sh
-dsh plugin --profile web add /ABSOLUTE/PATH/dsh-cleangpt-plugin-0.1.1.tgz
-```
-
-安装会自动加入插件 bundle，挂载 Host provider 和预编译浏览器 UI；内部模型 route 保持 `chatgpt-plan`。
-
-重启 DSH，打开 Settings → Models → ChatGPT subscription。点击 Continue with ChatGPT 会在 **Host 电脑的系统浏览器**打开官方授权页；等待期间可取消，已登录可重新授权。远程浏览器用户需要能够操作 Host 浏览器及其 loopback 回调。前端不会获得 token、OAuth URL 或 ID-token hint。若需要改账号标签或 authDir，参考 `example.cordis.patch.yml` 覆盖该 profile 配置；config 整体替换，保留你需要的其他字段。
+## 授权与账号
 
 登录与创建注册会产生**持续访问权限**：可在当前登录用户的本机保存和刷新你明确授予的 ChatGPT plan 权限。运行前须由你具体批准。开发过程中不执行以下命令：
 
@@ -107,7 +155,7 @@ config:
 
 ## 当前未验证与限制
 
-真实 OAuth 注册/浏览器回调、refresh 生产行为、模型/强度/tier 权限、真实 function tools、多轮 encrypted reasoning，以及完整已安装 DSH UI 的体验仍须在明确批准后验证；当前没有索取或使用真实凭据。没有客户端注册 ID 阻塞代码，因为官方允许动态首登；真实能力开放状态仍未知。
+已记录的 Windows 单账号文本/合成工具调用不代表所有账号或模型均可用。跨系统真实 OAuth/refresh、全部 effort/tier 权限、多轮 encrypted reasoning 与 Electron 桌面安装体验尚未完整验证。本轮 CI 不使用真实凭据或消耗订阅额度；真实授权必须由使用者明确同意。
 
 这是刻意精简的**文本 + DSH function tools** provider；不宣称图像/音频/视频或 hosted tools。遇到未支持内容会明确失败。模型目录不会自动猜测上下文长度或推理能力；DSH 原生思考选择器需要显式 `reasoningEfforts` 候选。未实现订阅余额查询、hosted MCP、上传文件或跨设备凭据迁移。CLI 超时/网络失败会停止，不在后台维持登录或继续额度请求。已启动的共享 token 轮换可在调用方取消后继续，最长 30 秒，以安全保存结果；它不发起模型推理。
 
@@ -130,9 +178,26 @@ config:
 
 ## 升级与卸载
 
-升级：保存需要的 profile 覆盖配置，执行同一 `dsh plugin --profile web add /ABSOLUTE/PATH/新包.tgz` 并重启。旧版若手工插入过同 id 的条目，请先移除重复 insert，保留 `- id: dsh-cleangpt-plugin` 配置覆盖。安装和升级不会发起真实授权。
+升级：保存你需要的 profile 覆盖配置，使用同一插件界面安装新版 `.tgz`，或在**同一 profile** 重复上述 `add --ignore-scripts "新包绝对路径"`，然后重启。测试覆盖版本变化、重复安装不会重复挂载 bundle，以及已有配置/合成凭据不变。旧版若手工插入过同 id 的条目，只移除你曾添加的重复 insert，保留 `- id: dsh-cleangpt-plugin` 配置覆盖；不要重置整个 profile。
 
-卸载：如需撤销授权，先显式执行 `dsh-cleangpt-plugin logout ACCOUNT`；随后 `dsh plugin --profile web remove dsh-cleangpt-plugin`，移除该 profile 中插件的配置覆盖并重启。卸载不自动删除独立凭据目录或持久化会话偏好；确认不再使用后可手动清理插件专属数据。不会改动其他应用凭据。
+卸载：在 DSH 插件页移除本插件，或完全退出对应 DSH 后执行：
+
+```sh
+# Desktop 自带命令；Web 用户将 desktop 换成 web。
+dsh plugin --profile desktop remove dsh-cleangpt-plugin
+```
+
+只清理该 profile 中你自己添加的本插件配置覆盖并重启。卸载**不等于撤销授权**，不会删除独立凭据目录或持久化会话偏好，也不会修改其他应用登录。若要撤销授权，可在 ChatGPT 设置断开本应用；已有源码/认证 CLI 的用户可在卸载前显式执行 `node dist/auth.js logout ACCOUNT`。不要假定 profile 安装会把 `dsh-cleangpt-plugin` 加到全局 PATH。
+
+## 安装诊断
+
+- 看不到卡片：确认安装的是当前 Desktop/Web profile；检查插件已启用，然后完全退出并重启。安装 `Source code.zip` 或 Git 仓库不等于安装预编译 `.tgz`。
+- 找不到 `dsh`：Desktop 通过「管理 dsh 命令…」安装后开新终端，或直接用插件界面。Windows 可用 `Get-Command dsh -All`，macOS 用 `command -v dsh` 检查实际命令来源。
+- Desktop profile 被拒绝：命中的是 npm 版 CLI。不要绕过保护、改 profile 路径或以管理员强制安装，改用 Desktop 自带命令/界面。
+- 找不到 `pnpm`：仅 npm 版 CLI 需要系统 pnpm；Desktop 自带。不要把此错误误判为插件编译失败。
+- 版本不兼容：先核对 `dsh --version` 与插件要求的 0.2.1-rc.2。不要使用 `allow-version --accept-risk` 强行略过未测试的兼容性。
+- 下载/依赖连接失败：DSH 会给出此次包操作诊断日志路径。先检查网络；不要盲目放开生命周期脚本或更改全局代理。提交问题时只发版本、错误码和脱敏日志，不能发 token、auth 文件或完整个人配置。
+- Windows ACL 错误：使用当前用户可写的本地 NTFS 位置；不自动修改已有不安全目录。不要执行授予 Everyone/Users 的权限修复，也不要复制其他应用凭据。
 
 公开候选依据（2026-10-19 核对）：[Reasoning guide](https://developers.openai.com/api/docs/guides/reasoning)、[Fast mode](https://developers.openai.com/api/docs/guides/fast-mode)、[Ultrafast mode（含 HTTP）](https://developers.openai.com/api/docs/guides/ultrafast-mode)，以及已锁定官方 OpenAI SDK 7.19.0 的 Responses ServiceTier 类型。API 文档不是 SIWC/plan 资格证明；每个模型可能拒绝部分 effort/tier。`ultra` 不在默认 effort 候选中，不声称官方 SIWC 支持。服务端拒绝时保留实际错误码、参数和请求 ID，不做候选降档或静默替换。
 

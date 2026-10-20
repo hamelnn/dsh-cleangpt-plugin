@@ -19,13 +19,25 @@ export function AccountPanel({ rpc }: { rpc: Rpc }) {
   const revision = useRef(0), action = useRef(false);
   useEffect(() => {
     let mounted = true;
-    const refresh = () => {
-      if (action.current) return;
-      const generation = revision.current;
-      return rpc<SafeStatus>('status').then(value => { if (mounted && generation === revision.current) { setStatus(value); setError(false); } }, () => { if (mounted && generation === revision.current) setError(true); });
+    let timer: ReturnType<typeof setTimeout>;
+    const controller = new AbortController();
+    const refresh = async () => {
+      if (!mounted) return;
+      let delay = 1000;
+      if (!action.current) {
+        const generation = revision.current;
+        try {
+          const value = await rpc<SafeStatus>('status', [], controller.signal);
+          if (mounted && generation === revision.current) { setStatus(value); setError(false); }
+          delay = value.phase === 'pending' ? 1000 : 5000;
+        } catch { if (mounted && generation === revision.current) setError(true); }
+      }
+      // Windows status checks validate the credential DACL using PowerShell.
+      // Schedule only after completion, never accumulate overlapping checks.
+      if (mounted) timer = setTimeout(() => void refresh(), delay);
     };
-    void refresh(); const timer = setInterval(refresh, 1000);
-    return () => { mounted = false; clearInterval(timer); };
+    void refresh();
+    return () => { mounted = false; clearTimeout(timer); controller.abort(); };
   }, [rpc]);
   const run = async (method: string, args: unknown[] = [], signal?: AbortSignal) => {
     if (action.current) return;

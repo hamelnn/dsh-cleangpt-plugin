@@ -89,10 +89,20 @@ console.log('PASS: all public effort/tier defaults and configured future/legacy 
 
 await page.getByRole('treeitem').filter({hasText:'Session B'}).click();await page.waitForTimeout(500);assert.equal(await speed.getAttribute('data-cleangpt-speed'),'default');assert.ok(await page.getByRole('button',{name:/reasoning effort 低/}).count());
 await page.route('**/api/cleangpt/setSpeed',async route=>{const body=route.request().postDataJSON();await route.fulfill({json:{type:'server-response',rpcId:body.rpcId,result:{ok:false,error:{code:'mock-disk-full',message:'Mock disk full',details:{}}}}});});
-await selectSpeed('priority');await page.getByRole('alert').filter({hasText:'Could not load/save speed.'}).waitFor();assert.equal(await speed.getAttribute('data-cleangpt-speed'),'default');await page.unroute('**/api/cleangpt/setSpeed');
+await selectSpeed('priority');await page.getByRole('alert').filter({hasText:'无法读取或保存加速设置。'}).waitFor();assert.equal(await speed.getAttribute('data-cleangpt-speed'),'default');await page.unroute('**/api/cleangpt/setSpeed');
 await page.screenshot({path:`${process.env.DSH_TEST_ARTIFACTS}/session-b-write-error.png`});
+// Slow Windows DACL checks must not accumulate one status request per second.
+let activeStatuses=0, maxStatuses=0;
+await page.route('**/api/cleangpt/status',async route=>{
+ activeStatuses++;maxStatuses=Math.max(maxStatuses,activeStatuses);
+ try{const response=await route.fetch();await new Promise(r=>setTimeout(r,1600));await route.fulfill({response});}
+ finally{activeStatuses--;}
+});
 await page.getByRole('button',{name:'Account menu',exact:true}).click();await page.getByText('Settings',{exact:true}).click();await page.getByRole('button',{name:'Models',exact:true}).click();
 await page.getByRole('button',{name:'重新授权 ChatGPT',exact:true}).waitFor();
+assert.equal(maxStatuses,1,'Slow account status polls must remain single-flight');
+await page.unroute('**/api/cleangpt/status');
+console.log('PASS: slow account status checks do not overlap');
 const proxyInput=page.getByRole('textbox',{name:'代理地址（含端口）',exact:true});
 await proxyInput.fill('http://127.0.0.1:7897');
 await page.getByRole('button',{name:'保存代理设置',exact:true}).click();
@@ -104,6 +114,6 @@ let attempts=0;let phase='idle';const attempt='00000000-0000-4000-8000-000000000
 const value=()=>({account:'synthetic',signedIn:true,permission:true,renewalUncertain:false,phase,...phase==='pending'?{attempt}:{}});
 for(const method of ['start','status','cancel'])await page.route(`**/api/cleangpt/${method}`,async route=>{if(method==='start'){attempts++;phase='pending';}if(method==='cancel')phase='cancelled';const body=route.request().postDataJSON();await route.fulfill({json:{type:'server-response',rpcId:body.rpcId,result:{ok:true,value:value()}}});});
 await page.getByRole('button',{name:'重新授权 ChatGPT',exact:true}).click();await page.getByRole('button',{name:'取消授权',exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'重新授权 ChatGPT',exact:true}).isDisabled(),true);assert.equal(attempts,1);
-await page.getByRole('button',{name:'取消授权',exact:true}).click();await page.getByText('synthetic: 已登录 · 已取消',{exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'重新授权 ChatGPT',exact:true}).isEnabled(),true);
+await page.getByRole('button',{name:'取消授权',exact:true}).click();await page.getByRole('status').filter({hasText:'synthetic： 已登录 · 已取消'}).waitFor();assert.equal(await page.getByRole('button',{name:'重新授权 ChatGPT',exact:true}).isEnabled(),true);
 await page.screenshot({path:`${process.env.DSH_TEST_ARTIFACTS}/models-cancelled.png`});assert.deepEqual(errors,[]);
 console.log('PASS: native effort, matched toolbar/menu, A/B isolation, same-session two-client sync and wire parameters, reconnect/late acknowledgement, refresh, cancel/continue, write failure and Models cancellation');await browser.close();

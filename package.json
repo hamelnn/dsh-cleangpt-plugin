@@ -31,6 +31,8 @@
   "scripts": {
     "build": "tsc && node scripts/build-client.mjs",
     "test": "npm run build && node --test --test-timeout=20000 test/*.test.mjs",
+    "pack:plugin": "npm run build && node scripts/pack.mjs",
+    "test:install": "npm run build && node scripts/test-install.mjs",
     "test:ui": "npm run build && node scripts/test-ui.mjs"
   },
   "dependencies": {

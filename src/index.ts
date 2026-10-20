@@ -87,7 +87,9 @@ interface Replay { version: 1; output: ReplayItem[]; content: ContentBlock[] }
 function isReplay(value: unknown): value is { response: Replay } {
   if (typeof value !== 'object' || value === null || !('response' in value)) return false;
   value = value.response;
-  return typeof value === 'object' && value !== null && 'version' in value && value.version === 1 && 'output' in value && Array.isArray(value.output) && 'content' in value && Array.isArray(value.content);
+  // Older sessions may contain an empty native snapshot despite visible content.
+  // Fall back to that visible history instead of silently deleting the turn.
+  return typeof value === 'object' && value !== null && 'version' in value && value.version === 1 && 'output' in value && Array.isArray(value.output) && value.output.length > 0 && 'content' in value && Array.isArray(value.content);
 }
 
 function usageChunk(usage: NonNullable<import('openai/resources/responses/responses.js').Response['usage']>): StreamChunk {
@@ -143,6 +145,7 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
     const blocks = new Map<string, { index: number; block: ContentBlock }>();
     const toolIds = new Set<string>(), doneTools = new Set<string>();
     const completedItems = new Map<number, ResponseOutputItem>();
+    const addedItems = new Set<string>();
     let index = 0, completed = false, hasTools = false;
     const begin = (key: string, block: ContentBlock): StreamChunk => {
       const entry = { index: index++, block }; blocks.set(key, entry);
@@ -156,7 +159,12 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
       requestId = result.request_id ?? undefined;
       for await (const event of result.data) {
         signal.throwIfAborted();
+        if (event.type === 'response.output_item.added') {
+          if (!event.item.id || addedItems.has(event.item.id)) throw new LlmError('Missing or duplicate output item ID', 'PROTOCOL');
+          addedItems.add(event.item.id);
+        }
         if (event.type === 'response.output_item.done') {
+          if (!Number.isInteger(event.output_index) || event.output_index < 0) throw new LlmError('Invalid completed output index', 'PROTOCOL');
           if (completedItems.has(event.output_index)) throw new LlmError('Duplicate completed output index', 'PROTOCOL');
           completedItems.set(event.output_index, event.item);
         }
@@ -184,7 +192,7 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
         } else if (event.type === 'response.output_item.done' && event.item.type === 'function_call') {
           const entry = blocks.get(event.item.id!);
           if (doneTools.has(event.item.id!)) throw new LlmError('Duplicate completed tool item', 'PROTOCOL');
-          if (!entry || entry.block.type !== 'tool-call' || entry.block.arguments !== event.item.arguments || entry.block.name !== event.item.name || entry.block.id !== event.item.call_id || event.item.namespace !== NAMESPACE)
+          if (event.item.status !== 'completed' || !entry || entry.block.type !== 'tool-call' || entry.block.arguments !== event.item.arguments || entry.block.name !== event.item.name || entry.block.id !== event.item.call_id || event.item.namespace !== NAMESPACE)
             throw new LlmError('Incomplete tool argument stream', 'PROTOCOL');
           doneTools.add(event.item.id!);
         } else if (event.type === 'error' || event.type === 'response.failed' || event.type === 'response.incomplete') {
@@ -197,17 +205,40 @@ export class ChatGPTPlanAdapter extends LlmAdapter {
           if (blocks.size === 0) throw new LlmError('Response completed without content or tool calls', 'EMPTY_RESPONSE');
           // Some plan streams omit the terminal output snapshot. Reconstruct only
           // from complete item.done snapshots, preserving their original order.
-          const output = event.response.output.length ? event.response.output : [...completedItems.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
+          const snapshots = [...completedItems.entries()].sort(([a], [b]) => a - b);
+          if (!event.response.output.length && (!snapshots.length || snapshots.some(([outputIndex], i) => outputIndex !== i))) throw new LlmError('Missing completed output snapshots', 'PROTOCOL');
+          const output = event.response.output.length ? event.response.output : snapshots.map(([, item]) => item);
+          if (!output.every((item): item is ReplayItem => ['message', 'reasoning', 'function_call'].includes(item.type))) throw new LlmError('Unsupported output item in Responses stream', 'UNSUPPORTED_CONTENT');
+          const outputIds = new Set(output.map(item => item.id));
+          if (outputIds.has(undefined) || outputIds.has('') || outputIds.size !== output.length || [...addedItems].some(id => !outputIds.has(id))) throw new LlmError('Missing or duplicate completed output item', 'PROTOCOL');
+          // Every visible delta must agree with the snapshot we will replay,
+          // including mixed text/tool responses and reasoning summaries.
+          const visible = new Map<string, { type: 'text' | 'reasoning'; text: string }>();
+          for (const item of output) {
+            if (item.type === 'message') {
+              if (item.status !== 'completed') throw new LlmError('Message item was not completed', 'PROTOCOL');
+              item.content.forEach((part, i) => visible.set(`${item.id}:t:${i}`, { type: 'text', text: part.type === 'refusal' ? part.refusal : part.text }));
+            } else if (item.type === 'reasoning') {
+              if (item.status !== undefined && item.status !== 'completed') throw new LlmError('Reasoning item was not completed', 'PROTOCOL');
+              item.summary.forEach((part, i) => visible.set(`${item.id}:r:${i}`, { type: 'reasoning', text: part.text }));
+            }
+          }
+          for (const [key, { block }] of blocks) {
+            if (block.type !== 'text' && block.type !== 'reasoning') continue;
+            const snapshot = visible.get(key);
+            if (!snapshot || snapshot.type !== block.type || snapshot.text !== block.text) throw new LlmError('Completed output does not match streamed content', 'PROTOCOL');
+            visible.delete(key);
+          }
+          if ([...visible.values()].some(part => part.text !== '')) throw new LlmError('Completed output contains unstreamed content', 'PROTOCOL');
           const finalTools = output.filter(item => item.type === 'function_call');
           if (finalTools.length !== toolIds.size || new Set(finalTools.map(item => item.id)).size !== finalTools.length || new Set(finalTools.map(item => item.call_id)).size !== finalTools.length) throw new LlmError('Missing or duplicate tool items in completed response', 'PROTOCOL');
           for (const item of finalTools) {
             const streamed = blocks.get(item.id!)?.block;
-            if (!doneTools.has(item.id!) || item.namespace !== NAMESPACE || streamed?.type !== 'tool-call' || streamed.id !== item.call_id || streamed.name !== item.name || streamed.arguments !== item.arguments) throw new LlmError('Completed tool call does not match streamed declaration', 'PROTOCOL');
+            if (item.status !== 'completed' || !doneTools.has(item.id!) || item.namespace !== NAMESPACE || streamed?.type !== 'tool-call' || streamed.id !== item.call_id || streamed.name !== item.name || streamed.arguments !== item.arguments) throw new LlmError('Completed tool call does not match streamed declaration', 'PROTOCOL');
           }
           for (const entry of blocks.values()) yield { type: 'block-end', index: entry.index, block: entry.block };
           const usage = event.response.usage;
           if (usage) yield usageChunk(usage);
-          if (!output.every((item): item is ReplayItem => ['message', 'reasoning', 'function_call'].includes(item.type))) throw new LlmError('Unsupported output item in Responses stream', 'UNSUPPORTED_CONTENT');
           completed = true;
           yield { type: 'finish', reason: { kind: hasTools ? 'tool-calls' : 'stop' }, replayState: { response: { version: 1, output, content: [...blocks.values()].map(entry => entry.block) } satisfies Replay } };
           return;
