@@ -1,6 +1,6 @@
 {
   "name": "dsh-cleangpt-plugin",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Native DSH provider for officially authorized ChatGPT plan usage",
   "type": "module",
   "main": "dist/index.js",
@@ -31,6 +31,8 @@
   "scripts": {
     "build": "tsc && node scripts/build-client.mjs",
     "test": "npm run build && node --test --test-timeout=20000 test/*.test.mjs",
+    "pack:plugin": "npm run build && node scripts/pack.mjs",
+    "test:install": "npm run build && node scripts/test-install.mjs",
     "test:ui": "npm run build && node scripts/test-ui.mjs"
   },
   "dependencies": {

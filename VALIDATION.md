@@ -2,29 +2,30 @@
 
 基线：Linux、Node 24.19.0、npm 11.9.0、DSH/dsh-llm 0.2.1-rc.2（源码参照 687f282e8625c6b8d11ff58211a90524be2e4317），Cordis 4.0.5、OpenAI SDK 7.19.0、jose 6.2.12。精确依赖见 package-lock.json。
 
-`npm test` 运行严格 TypeScript、预编译浏览器 bundle 构建和 56 项测试。保留原 44 项协议/工具/reasoning replay/OAuth/刷新安全回归，新增真实 loopback 取消及迟到回调拒绝、脱敏状态、重复授权和取消、失败重试、A/B 持久化、写盘失败、会话/fork 默认、请求冻结、安装 bundle 全部默认候选、任意未来/旧配置候选及 SDK wire 参数断言。loopback 测试使用隔离 PATH 中的 `open` / `xdg-open` 替身，禁止真实浏览器与外部网络调用；无论断言是否失败，均先取消并等待 login 结束，再恢复全局状态。额外回归在主动制造断言失败后检查 listener、凭据锁及全局状态清理。全部使用合成账号、临时目录和响应，无真实登录或额度调用。
+`npm test` 运行严格 TypeScript、预编译浏览器 bundle 构建和全部合成单元测试。保留原 44 项协议/工具/reasoning replay/OAuth/刷新安全回归，新增真实 loopback 取消及迟到回调拒绝、脱敏状态、重复授权和取消、失败重试、A/B 持久化、写盘失败、会话/fork 默认、请求冻结、安装 bundle 全部默认候选、任意未来/旧配置候选及 SDK wire 参数断言。loopback 测试使用隔离 PATH 中的 `open` / `xdg-open` 替身，禁止真实浏览器与外部网络调用；无论断言是否失败，均先取消并等待 login 结束，再恢复全局状态。额外回归在主动制造断言失败后检查 listener、凭据锁及全局状态清理。全部使用合成账号、临时目录和响应，无真实登录或额度调用。
 
 `npm run test:ui` 先打 tgz，通过官方 dsh plugin CLI 在临时 DSH_HOME 全新安装 bundle，再启动真实 DSH web 与系统 Chromium/Playwright。实际页面验证 Models 状态和取消/重新授权 UI（浏览器层合成回调）、原生模型/effort 选择器与并列 session speed、真实 DSH 主循环发出合成请求、所有默认 effort/tier、Ultrafast、显式未来/旧配置候选的菜单到 SDK 精确参数、按钮与原生模型控件的高度/字号/行高/内边距一致、菜单键盘关闭、同会话两页面双向同步并从两页发出匹配的 tier、断线重连及迟到保存响应保护、A/B 切换、刷新恢复、生成中取消后继续发消息、写入失败不更新选中值、无页面脚本错误。脚本还完整重启 Host，并用全新浏览器验证两会话的 effort/speed 恢复。OAuth UI 点击由浏览器截获，不访问真实授权服务；Host 登录取消另有真实 loopback 测试。
 
-生产实现 5 文件（含跨平台凭据权限模块），未修改 DSH 主循环或工具。npm 包含已编译 Host/client、源码、测试、构建脚本、bundle 与安装文档；不包含账号、node_modules、缓存或个人 profile。源码 zip 包含锁文件，可重建。
+生产实现位于 `src/`（含跨平台凭据权限模块），未修改 DSH 主循环或工具。npm 包含已编译 Host/client、源码、测试、构建脚本、bundle 与安装文档；不包含账号、node_modules、缓存或个人 profile。源码 zip 包含锁文件，可重建。
 
 ## 复现
 
 ```sh
 npm ci --ignore-scripts --registry=https://registry.npmjs.org
 npm test
-npm pack --ignore-scripts
+npm run pack:plugin
 npm install --prefix /tmp/cleangpt-test-runtime --ignore-scripts --registry=https://registry.npmjs.org @deepseek-ai/dsh@0.2.1-rc.2 playwright@1.64.1 pnpm@11.19.0
 node /tmp/cleangpt-test-runtime/node_modules/playwright/cli.js install chromium
+DSH_TEST_RUNTIME=/tmp/cleangpt-test-runtime npm run test:install
 DSH_TEST_RUNTIME=/tmp/cleangpt-test-runtime npm run test:ui
 # 已安装 Chromium 时可加 DSH_TEST_BROWSER=/usr/bin/chromium
 ```
 
-CI 在 Linux、macOS 与 Windows 上运行 unit/type/build/pack（包括各平台浏览器替身及失败清理回归），Linux 另运行同一隔离浏览器集成脚本。以对应提交的 GitHub Actions 终态为远端结果，不以本地通过冒充远端成功。
+CI 在 Linux、macOS 与 Windows 上安排 unit/type/build、真实包管理器安装/重复安装/升级/卸载与同一隔离浏览器集成脚本。只有整个三系统矩阵通过，才生成可下载的预编译包 artifact、SHA-256 和来源提交清单。以对应提交的 GitHub Actions 终态为远端结果，不以本地通过冒充远端成功。
 
 ## 尚未验证
 
-真实 SIWC 动态注册开放资格、真实 OAuth/refresh/revoke、真实账号的模型/effort/tier 授权及订阅多轮推理；macOS 完整 UI；Windows 完整 UI 与真实账号登录。Models 入口打开的是 Host 系统浏览器，远程使用需能操作 Host 浏览器及 loopback 回调。候选 effort/tier 绝不表示账号已获资格。
+以下是测试覆盖边界，不否认下文保留的单账号历史验证：全部账号的真实 SIWC 注册资格、跨系统 OAuth/refresh/revoke、全部模型/effort/tier 权限与订阅多轮推理，以及 Electron Desktop 窗口完整安装操作均未完整验证。Models 入口打开的是 Host 系统浏览器，远程使用需能操作 Host 浏览器及 loopback 回调。候选 effort/tier 绝不表示账号已获资格。
 
 `allowUncappedAuxiliary` 默认 false，只有显式接受无服务端输出硬上限后才启用。测试 profile 显式 true 仅用于合成标题/辅助请求，不改变安装默认。用户个人 profile 未安装、配置未修改。
 
@@ -51,3 +52,17 @@ CI 在 Linux、macOS 与 Windows 上运行 unit/type/build/pack（包括各平�
 模型页授权状态、按钮、提示以及加速菜单完成中文适配；推理档位通过原生模型元数据提供中文名称，请求标识保持原值。模型页新增可编辑的 HTTP/HTTPS 代理地址（含端口），读取现有 profile 默认值，持久保存到独立 cleangpt_network 域，并在下一次请求动态使用。
 
 67 项本机测试通过，覆盖无效代理拒绝、存储重新打开后恢复、空值覆盖以及模型请求切换代理。已在本机 DSH 模型页验证显示原有 7897 地址、点击保存得到成功提示，原生模型按钮显示中文推理等级。
+
+
+## 跨平台便捷安装审查（2026-10-20）
+
+- README 以官方 Desktop 插件界面安装预编译 tarball 为首选，区分 Desktop 内置 CLI 与 npm CLI，不再要求普通用户构建源码/手工编辑 YAML。官方 Desktop 菜单与本地 tarball 支持经精确 `dsh-v0.2.1-rc.2` 源码核对，非本轮 Electron 窗口实测。
+- `npm run pack:plugin` 验证必须的 Host/client/bundle 文件、严格打包路径白名单与无安装生命周期脚本，生成 `.tgz`、SHA-256 和包含来源提交的文件清单。无 npm/Release 发布。
+- `npm run test:install` 在临时 Unicode/空格路径中调用真实 DSH CLI，覆盖全新安装、自动 bundle 注册、重复安装、不同版本升级及移除，并逐字比较已有用户覆盖配置、合成凭据和其他 profile 未改变。不会登录或读取用户现有凭据。
+- UI runner 使用 npm 的 JavaScript 入口、`file:` URL 与生产私有目录创建逻辑，兼容 Windows 路径/DACL。修复中文错误文案和全角冒号断言；增加慢状态请求 single-flight 回归。Models 空闲状态 5 秒、待授权 1 秒间隔，在上一请求完成后再计时；卸载时停止轮询，不放宽 ACL 检查。
+- 空终态恢复仅接受完整、一致且连续的已完成快照；缺少文本/推理快照、重复/缺失索引、未完成工具状态会明确报错。旧的空 replay 退回可见历史，避免静默丢失上一轮内容。
+- 本轮云端 Linux 的 unit/build 和包管理器验证记录以 PR 检查为准。本地 Chromium 因执行器 Unix socket 限制未启动，不能据此声明本地 UI 通过。远端三系统 UI 状态必须查看对应 SHA 的完整 CI 终态，不能用历史 PR 的通过状态替代。
+
+本轮未操作个人 DSH profile、真实 OAuth、真实推理或系统代理/安全设置。下方/前文 Windows 真实账号记录来自此前工作，非本轮自动化重复验证。
+
+同版本更新检查发现：直接覆盖同名 0.1.2 tarball 再 add，pnpm 可能继续使用旧文件内容。因此本次包升级为 0.1.3，并在安装回归中先安装带唯一合成代码标记的上一版本，再安装当前包，检查版本与代码都已替换，同时保留配置/凭据；不会通过删缓存或重置 profile 处理。

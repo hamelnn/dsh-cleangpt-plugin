@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';import assert from 'node:assert/stri
 const { chromium } = createRequire(`${process.env.DSH_TEST_RUNTIME}/package.json`)('playwright');
 const browser=await chromium.launch({...(process.env.DSH_TEST_BROWSER ? {executablePath:process.env.DSH_TEST_BROWSER} : {}),headless:true,args:['--no-sandbox']});const page=await browser.newPage({viewport:{width:1440,height:1000}});let currentId;const errors=[];
 page.on('pageerror',e=>errors.push(e.message));page.on('request',r=>{if(r.url().includes('/api/cleangpt/watchSpeed'))currentId=r.postDataJSON().payload.args.sessionId;});
+try {
 const rpc=(endpoint,args)=>page.evaluate(async({endpoint,args})=>{const rpcId=crypto.randomUUID();const response=await fetch(`api/${endpoint}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'client-request',rpcId,method:endpoint,payload:{args}})});return (await response.json()).result;},{endpoint,args});
 await page.goto((await readFile(process.env.DSH_TEST_LOG,'utf8')).match(/http:\/\/127\.0\.0\.1:\d+\/\?token=[^\s]+/)[0]);
 await page.waitForTimeout(1200);
@@ -11,6 +12,8 @@ await page.getByRole('button',{name:'Add workspace',exact:true}).click();
 const dialog=page.getByRole('dialog',{name:'Select Workspace Directory'});await dialog.waitFor();await dialog.getByRole('button',{name:'Edit path',exact:true}).click();
 await dialog.locator('input[aria-label="Edit path"]').fill(process.env.DSH_TEST_WORKSPACE);await page.keyboard.press('Enter');await dialog.getByRole('button',{name:'Open',exact:true}).click();
 const speed=page.getByRole('button',{name:/^ChatGPT 加速：/});
+const waitSpeed=async(client,value)=>{await client.bringToFront();await client.waitForFunction(value=>document.querySelector('[data-cleangpt-speed]')?.getAttribute('data-cleangpt-speed')===value,value,{timeout:15000,polling:100});};
+const waitEffort=level=>page.getByRole('button',{name:`Select model, current Synthetic GPT, reasoning effort ${effortLabel(level)}`,exact:true}).and(page.locator('[aria-expanded="false"]')).waitFor();
 const speedName=id=>id==='auto'?speedLabel(id):`${speedLabel(id)}（需账号支持）`;
 const selectSpeed=async id=>{await page.bringToFront();await speed.click();await page.getByRole('menuitem',{name:speedName(id),exact:true}).click();};
 const effort=async level=>{
@@ -18,6 +21,7 @@ const effort=async level=>{
  if(await page.getByRole('menuitem',{name:/^Model/}).count())await page.getByRole('menuitem',{name:/^Model/}).click();
  await page.getByText('Synthetic GPT',{exact:true}).last().click();
  await page.getByRole('button',{name:/Select model, current Synthetic GPT, reasoning effort/}).and(page.locator('[aria-expanded="false"]')).click();await page.getByRole('menuitem',{name:/Effort/}).click();await page.getByRole('menuitemradio',{name:`${effortLabel(level)}`,exact:true}).click();
+ await waitEffort(level);
 };
 await speed.waitFor();await page.waitForTimeout(300);await selectSpeed('priority');await effort('high');
 await page.locator('[data-composer-input]').fill('Synthetic regression A seed');await page.getByRole('button',{name:'Send message',exact:true}).click();await page.getByText('Synthetic response. No external inference.',{exact:true}).last().waitFor();await page.waitForTimeout(800);const A=currentId;
@@ -33,8 +37,10 @@ const completed=await page.getByText('Synthetic response. No external inference.
 await page.locator('[data-composer-input]').fill('Synthetic continue probe');await page.getByRole('button',{name:'Send message',exact:true}).click();
 await page.waitForFunction(count=>[...document.querySelectorAll('p')].filter(p=>p.textContent==='Synthetic response. No external inference.').length>count,completed);
 assert.equal(await speed.getAttribute('data-cleangpt-speed'),'default');
-await page.getByRole('treeitem').filter({hasText:'Session A'}).click();await page.waitForTimeout(500);assert.equal(await speed.getAttribute('data-cleangpt-speed'),'priority');assert.ok(await page.getByRole('button',{name:/reasoning effort 高/}).count());
-await page.reload();await speed.waitFor();await page.waitForTimeout(400);assert.equal(await speed.getAttribute('data-cleangpt-speed'),'priority');assert.ok(await page.getByRole('button',{name:/reasoning effort 高/}).count());
+await page.getByRole('treeitem').filter({hasText:'Session A'}).click();await waitSpeed(page,'priority');await waitEffort('high');assert.equal(await speed.getAttribute('data-cleangpt-speed'),'priority');
+// Windows credential ACL validation can outlast a fixed 400ms delay while the
+// native model catalog loads. Assert restored UI state instead of elapsed time.
+await page.reload();await waitSpeed(page,'priority');await waitEffort('high');assert.equal(await speed.getAttribute('data-cleangpt-speed'),'priority');
 const model=page.getByRole('button',{name:/reasoning effort 高/});
 const dimensions=await speed.evaluate(el=>{const s=getComputedStyle(el);return {height:el.getBoundingClientRect().height,fontSize:s.fontSize,lineHeight:s.lineHeight,padding:s.padding};});
 assert.deepEqual(dimensions,await model.evaluate(el=>{const s=getComputedStyle(el);return {height:el.getBoundingClientRect().height,fontSize:s.fontSize,lineHeight:s.lineHeight,padding:s.padding};}));
@@ -50,7 +56,6 @@ for(let i=0;i<50 && !await sessionA.isVisible();i++){if(await group.getAttribute
 if(!await sessionA.isVisible()){console.log('Other client rows:',await other.getByRole('treeitem').allTextContents());await other.screenshot({path:`${process.env.DSH_TEST_ARTIFACTS}/other-client-failure.png`});}
 await sessionA.click({timeout:5000});
 const otherSpeed=other.getByRole('button',{name:/^ChatGPT 加速：/});
-const waitSpeed=async(client,value)=>{await client.bringToFront();await client.waitForFunction(value=>document.querySelector('[data-cleangpt-speed]')?.getAttribute('data-cleangpt-speed')===value,value,{timeout:3000,polling:100});};
 const otherSelect=async id=>{await other.bringToFront();await otherSpeed.click();await other.getByRole('menuitem',{name:speedName(id),exact:true}).click();};
 const send=async(client,text)=>{await client.bringToFront();const count=await client.getByText('Synthetic response. No external inference.',{exact:true}).count();await client.locator('[data-composer-input]').fill(text);await client.getByRole('button',{name:'Send message',exact:true}).click();await client.waitForFunction(count=>[...document.querySelectorAll('p')].filter(p=>p.textContent==='Synthetic response. No external inference.').length>count,count);};
 const wire=async(text,tier)=>{const requests=(await readFile(process.env.DSH_TEST_CAPTURE,'utf8')).trim().split('\n').map(JSON.parse);assert.equal(requests.findLast(r=>JSON.stringify(r.input).includes(text)).service_tier,tier === 'auto' ? undefined : tier);};
@@ -87,12 +92,22 @@ await selectSpeed('priority');await waitSpeed(page,'priority');
 console.log('PASS: all public effort/tier defaults and configured future/legacy candidates reach SDK wire unchanged');
 
 
-await page.getByRole('treeitem').filter({hasText:'Session B'}).click();await page.waitForTimeout(500);assert.equal(await speed.getAttribute('data-cleangpt-speed'),'default');assert.ok(await page.getByRole('button',{name:/reasoning effort 低/}).count());
+await page.getByRole('treeitem').filter({hasText:'Session B'}).click();await waitSpeed(page,'default');await waitEffort('low');assert.equal(await speed.getAttribute('data-cleangpt-speed'),'default');
 await page.route('**/api/cleangpt/setSpeed',async route=>{const body=route.request().postDataJSON();await route.fulfill({json:{type:'server-response',rpcId:body.rpcId,result:{ok:false,error:{code:'mock-disk-full',message:'Mock disk full',details:{}}}}});});
-await selectSpeed('priority');await page.getByRole('alert').filter({hasText:'Could not load/save speed.'}).waitFor();assert.equal(await speed.getAttribute('data-cleangpt-speed'),'default');await page.unroute('**/api/cleangpt/setSpeed');
+await selectSpeed('priority');await page.getByRole('alert').filter({hasText:'无法读取或保存加速设置。'}).waitFor();assert.equal(await speed.getAttribute('data-cleangpt-speed'),'default');await page.unroute('**/api/cleangpt/setSpeed');
 await page.screenshot({path:`${process.env.DSH_TEST_ARTIFACTS}/session-b-write-error.png`});
+// Slow Windows DACL checks must not accumulate one status request per second.
+let activeStatuses=0, maxStatuses=0;
+await page.route('**/api/cleangpt/status',async route=>{
+ activeStatuses++;maxStatuses=Math.max(maxStatuses,activeStatuses);
+ try{const response=await route.fetch();await new Promise(r=>setTimeout(r,1600));await route.fulfill({response});}
+ finally{activeStatuses--;}
+});
 await page.getByRole('button',{name:'Account menu',exact:true}).click();await page.getByText('Settings',{exact:true}).click();await page.getByRole('button',{name:'Models',exact:true}).click();
 await page.getByRole('button',{name:'重新授权 ChatGPT',exact:true}).waitFor();
+assert.equal(maxStatuses,1,'Slow account status polls must remain single-flight');
+await page.unroute('**/api/cleangpt/status');
+console.log('PASS: slow account status checks do not overlap');
 const proxyInput=page.getByRole('textbox',{name:'代理地址（含端口）',exact:true});
 await proxyInput.fill('http://127.0.0.1:7897');
 await page.getByRole('button',{name:'保存代理设置',exact:true}).click();
@@ -104,6 +119,12 @@ let attempts=0;let phase='idle';const attempt='00000000-0000-4000-8000-000000000
 const value=()=>({account:'synthetic',signedIn:true,permission:true,renewalUncertain:false,phase,...phase==='pending'?{attempt}:{}});
 for(const method of ['start','status','cancel'])await page.route(`**/api/cleangpt/${method}`,async route=>{if(method==='start'){attempts++;phase='pending';}if(method==='cancel')phase='cancelled';const body=route.request().postDataJSON();await route.fulfill({json:{type:'server-response',rpcId:body.rpcId,result:{ok:true,value:value()}}});});
 await page.getByRole('button',{name:'重新授权 ChatGPT',exact:true}).click();await page.getByRole('button',{name:'取消授权',exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'重新授权 ChatGPT',exact:true}).isDisabled(),true);assert.equal(attempts,1);
-await page.getByRole('button',{name:'取消授权',exact:true}).click();await page.getByText('synthetic: 已登录 · 已取消',{exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'重新授权 ChatGPT',exact:true}).isEnabled(),true);
+await page.getByRole('button',{name:'取消授权',exact:true}).click();await page.getByRole('status').filter({hasText:'synthetic： 已登录 · 已取消'}).waitFor();assert.equal(await page.getByRole('button',{name:'重新授权 ChatGPT',exact:true}).isEnabled(),true);
 await page.screenshot({path:`${process.env.DSH_TEST_ARTIFACTS}/models-cancelled.png`});assert.deepEqual(errors,[]);
-console.log('PASS: native effort, matched toolbar/menu, A/B isolation, same-session two-client sync and wire parameters, reconnect/late acknowledgement, refresh, cancel/continue, write failure and Models cancellation');await browser.close();
+console.log('PASS: native effort, matched toolbar/menu, A/B isolation, same-session two-client sync and wire parameters, reconnect/late acknowledgement, refresh, cancel/continue, write failure and Models cancellation');
+} catch(error) {
+ console.log('Failure sidebar rows:',await page.getByRole('treeitem').allTextContents());
+ console.log('Failure model buttons:',await page.getByRole('button',{name:/Select model/}).allTextContents());
+ await page.screenshot({path:`${process.env.DSH_TEST_ARTIFACTS}/ui-failure.png`});
+ throw error;
+} finally {await browser.close();}
