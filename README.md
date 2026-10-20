@@ -22,14 +22,14 @@ npm test
 npm pack --ignore-scripts
 ```
 
-Git 仓库与源码包保留 `package-lock.json`，可用 `npm ci` 重建。可安装 tgz 同时包含已编译 `dist`、源码、测试和配置示例；npm 打包规则不包含 package-lock。Node 24+，macOS 已验证 mock；凭据权限检查面向 Unix，已验证 Linux 隔离 profile 与 macOS 基线 mock，Windows 不支持。
+Git 仓库与源码包保留 `package-lock.json`，可用 `npm ci` 重建。可安装 tgz 同时包含已编译 `dist`、源码、测试和配置示例；npm 打包规则不包含 package-lock。要求 Node 24+。支持 Linux、macOS 和 Windows；Windows 使用系统自带的 Windows PowerShell 5.1 检查 NTFS ACL，无需管理员权限。CI 在三个系统运行编译与 mock 测试，真实账号授权与推理仍需单独验证。
 
 ## 手动安装与授权
 
 先审阅代码。只有决定安装时，才运行如下命令，将本地包加到你选定的 DSH profile：
 
 ```sh
-dsh plugin --profile web add /ABSOLUTE/PATH/dsh-cleangpt-plugin-0.1.0.tgz
+dsh plugin --profile web add /ABSOLUTE/PATH/dsh-cleangpt-plugin-0.1.1.tgz
 ```
 
 安装会自动加入插件 bundle，挂载 Host provider 和预编译浏览器 UI；内部模型 route 保持 `chatgpt-plan`。
@@ -45,7 +45,7 @@ node dist/auth.js login default --approve-access
 
 CLI 在系统浏览器展示官方授权页。`--approve-access` 是显式操作门槛，不表示开发者或测试已获授权。首次以 `dynamic_agent_client` 注册真实名称 `dsh-cleangpt-plugin`，生成并持久保存此插件的 `urn:uuid:…` host ID；回调取得 issued client ID 后，用它换码和复用后续登录。不需要 client secret、partner API key 或付费 API key。如果官方动态注册尚未对你的账号/部署开放，应停止并报告官方拒绝，不改走其他客户端 ID 或非公开端点。
 
-默认凭据目录 `~/.config/dsh-cleangpt-plugin`，目录 0700、文件 0600。`DSH_CLEANGPT_AUTH_DIR` 只控制登录 CLI；若改变它，provider 的 `authDir` 必须设置为同一绝对路径。`host` 为保留标签，不能作为账号名，以免与 host ID 文件冲突。每个账号/工作区注册使用不同本地标签，分别保存 client ID、已验证 subject、scope 和 token；切换 provider 的 `account` 后重载配置，模型目录重新从该账号获取。相同邮箱不合并注册。活动标签在 provider 名称中显示。
+默认凭据目录 `~/.config/dsh-cleangpt-plugin`，Unix 目录 0700、文件 0600。Windows 新目录以受保护的 DACL 创建，仅授予当前用户访问权，凭据文件继承此权限；读取时校验所有者和 ACL，只允许当前用户、SYSTEM 和 Administrators，拒绝其他主体、符号链接和重解析点。已有不安全目录会报错，不会自动改写权限。`DSH_CLEANGPT_AUTH_DIR` 只控制登录 CLI；若改变它，provider 的 `authDir` 必须设置为同一绝对路径。`host` 为保留标签，不能作为账号名，以免与 host ID 文件冲突。每个账号/工作区注册使用不同本地标签，分别保存 client ID、已验证 subject、scope 和 token；切换 provider 的 `account` 后重载配置，模型目录重新从该账号获取。相同邮箱不合并注册。活动标签在 provider 名称中显示。
 
 ```sh
 node dist/auth.js accounts

@@ -10,6 +10,7 @@ import * as Domain from '@deepseek-ai/dsh-storage-domain';
 import { Controls, sessionDomain } from '../dist/controls.js';
 import { credentialStatus } from '../dist/auth.js';
 import { ChatGPTPlanAdapter } from '../dist/index.js';
+import { privateTemporary } from './private-temporary.mjs';
 async function harness() {
   const root = await mkdtemp(join(tmpdir(),'cleangpt-controls-'));
   const ctx = new Context(); await ctx.plugin(Storage); await ctx.plugin(Json,{root}); await ctx.plugin(Domain,{backend:'json'});
@@ -49,7 +50,7 @@ test('declined authorization is a safe failed state and can be retried without e
   }finally{await h.close();}
 });
 test('status exposes neither token, identity nor credential path; permission differs from entitlement',async()=>{
- const root=await mkdtemp(join(tmpdir(),'cleangpt-status-'));try{
+ const root=await privateTemporary();try{
  await writeFile(join(root,'mock.json'),JSON.stringify({client_id:'mock-client',access_token:'mock-secret-access',refresh_token:'mock-secret-refresh',id_token:'mock-secret-id',email:'private@mock.invalid',subject:'mock-sub',scope:'chatgpt.tokens.use.direct',expires_at:Date.now()+100000}),{mode:0o600});
  assert.deepEqual(await credentialStatus(root,'mock'),{account:'mock',signedIn:true,permission:true,renewalUncertain:false});
  }finally{await rm(root,{recursive:true,force:true});}

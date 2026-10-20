@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { Context } from '@deepseek-ai/cordis';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import Storage from '@deepseek-ai/dsh-storage';
 import * as JsonStorage from '@deepseek-ai/dsh-storage-json';
 import * as DomainStorage from '@deepseek-ai/dsh-storage-domain';
@@ -215,5 +215,5 @@ test('published package, lockfile, plugin identifier and CLI share the requested
   const plugin = await import('../dist/index.js');
   assert.equal(pkg.name, 'dsh-cleangpt-plugin'); assert.equal(lock.name, pkg.name); assert.equal(lock.packages[''].name, pkg.name);
   assert.equal(plugin.name, pkg.name); assert.deepEqual(Object.keys(pkg.bin), [pkg.name]);
-  assert.equal(plugin.Config({}).authDir.endsWith('/dsh-cleangpt-plugin'), true);
+  assert.equal(basename(plugin.Config({}).authDir), 'dsh-cleangpt-plugin');
 });

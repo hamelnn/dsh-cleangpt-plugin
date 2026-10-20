@@ -2,22 +2,22 @@
 /** Independent SIWC credentials. No Codex, browser cookie, or DSH token discovery. */
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { constants } from 'node:fs';
-import { mkdir, open, rename, unlink, rmdir, lstat } from 'node:fs/promises';
+import { mkdir, open, rename, unlink, rmdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { homedir } from 'node:os';
-import { join, resolve, isAbsolute } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type { JWTVerifyGetKey } from 'jose';
+import { AuthError, privateDirectory, beforePrivateRead, checkPrivateFile } from './credential-files.js';
+export { AuthError } from './credential-files.js';
 
 export const defaultDirectory = join(homedir(), '.config', 'dsh-cleangpt-plugin');
 const ISSUER = 'https://auth.openai.com';
 const RESOURCE = 'https://api.openai.com/v1';
 const SCOPE = 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct';
 const APP = 'dsh-cleangpt-plugin';
-/** Authentication failures stop inference without exposing token values. */
-export class AuthError extends Error { readonly code = 'AUTH'; }
 /** Display-safe local credential projection; this does not establish server entitlement. */
 export async function credentialStatus(dir = defaultDirectory, account = 'default') {
   const session = await readSession(accountPath(dir, account));
@@ -39,20 +39,17 @@ function accountPath(dir: string, account: string) {
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(account)) fail('Account label must contain 1–64 letters, digits, _ or -');
   return join(dir, `${account}.json`);
 }
-async function privateDirectory(dir: string) {
-  if (!isAbsolute(dir)) fail('Credential directory must be an absolute path');
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  const stat = await lstat(dir);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) fail('Credential directory must be owned by you, mode 0700, and not a symlink');
-}
 /** Read only owner-private regular files; symlinks are never followed. */
 async function read<T>(file: string): Promise<T | undefined> {
-  let handle;
-  try { handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW); }
+  let handle, expected;
+  try {
+    expected = await beforePrivateRead(file);
+    handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  }
   catch (error) { if (isCode(error, 'ENOENT')) return undefined; throw error; }
   try {
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.uid !== process.getuid?.() || (stat.mode & 0o077)) fail('Credential file must be owned by you with mode 0600');
+    await checkPrivateFile(file, stat, expected);
     const raw = await handle.readFile('utf8');
     try { return JSON.parse(raw) as T; } catch (error) { return fail('Credential JSON is invalid; contents suppressed'); }
   } finally { await handle.close(); }
@@ -65,9 +62,14 @@ async function readSession(file: string) {
 function isCode(error: unknown, code: string): boolean { return error instanceof Error && 'code' in error && error.code === code; }
 async function write(file: string, value: unknown) {
   const temporary = `${file}.${randomUUID()}.tmp`;
-  const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-  try { await handle.writeFile(JSON.stringify(value)); await handle.sync(); }
-  finally { await handle.close(); }
+  const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
+  try {
+    await checkPrivateFile(temporary, await handle.stat());
+    await handle.writeFile(JSON.stringify(value)); await handle.sync();
+  } catch (error) {
+    await handle.close(); await unlink(temporary); throw error;
+  }
+  await handle.close();
   try { await rename(temporary, file); }
   catch (error) { await unlink(temporary); throw error; }
 }
@@ -199,7 +201,7 @@ export async function login(dir = defaultDirectory, account = 'default', signal 
       const browser = process.platform === 'darwin' ? ['open', transaction.url.href] : process.platform === 'win32' ? ['rundll32', 'url.dll,FileProtocolHandler', transaction.url.href] : ['xdg-open', transaction.url.href];
       // Never print the URL: returning sign-ins contain a retained ID token hint.
       console.log('Continue with ChatGPT — opening the system browser.');
-      const child = spawn(browser[0], browser.slice(1), { stdio: 'ignore' });
+      const child = spawn(browser[0], browser.slice(1), { stdio: 'ignore', windowsHide: true });
       child.on('error', reject); child.on('exit', code => { if (code !== 0) reject(new Error('Cannot open the system browser')); });
       const registration = await result;
       signal.throwIfAborted();

@@ -1,6 +1,6 @@
 {
   "name": "dsh-cleangpt-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Native DSH provider for officially authorized ChatGPT plan usage",
   "type": "module",
   "main": "dist/index.js",
