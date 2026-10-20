@@ -6,7 +6,11 @@ permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -18,10 +22,13 @@ jobs:
       - run: npm test
       - run: npm pack --ignore-scripts
       - name: Install isolated DSH browser regression runtime
+        if: runner.os == 'Linux'
         run: npm install --prefix "$RUNNER_TEMP/dsh-runtime" --ignore-scripts --registry=https://registry.npmjs.org @deepseek-ai/dsh@0.2.1-rc.2 playwright@1.64.1 pnpm@11.19.0
       - name: Install Chromium
+        if: runner.os == 'Linux'
         run: node "$RUNNER_TEMP/dsh-runtime/node_modules/playwright/cli.js" install --with-deps chromium
       - name: Packed clean install and synthetic native UI regression
+        if: runner.os == 'Linux'
         env:
           DSH_TEST_RUNTIME: ${{ runner.temp }}/dsh-runtime
           DSH_TEST_ARTIFACTS: ${{ runner.temp }}/cleangpt-artifacts
