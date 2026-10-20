@@ -3,9 +3,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, stat, chmod, symlink, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { generateKeyPair, exportJWK, createLocalJWKSet, SignJWT } from 'jose';
-import { accessToken, exclusive, authorization, callback, verifyIdentity } from '../dist/auth.js';
+import { accessToken, exclusive, authorization, callback, verifyIdentity, login } from '../dist/auth.js';
 
 const scope = 'openid profile email offline_access resource.invoke chatgpt.tokens.use.direct';
 const issuer = 'https://auth.openai.com';
@@ -131,4 +131,81 @@ test('host account label cannot overwrite global host metadata', async () => {
   await writeFile(file, JSON.stringify('urn:uuid:00000000-0000-4000-8000-000000000000'), { mode: 0o600 });
   try { await assert.rejects(accessToken(dir, 'host'), /reserved/); await assert.rejects(accessToken(dir, 'Host'), /reserved/); assert.equal(JSON.parse(await readFile(file, 'utf8')), 'urn:uuid:00000000-0000-4000-8000-000000000000'); }
   finally { await rm(dir, { recursive: true }); }
+});
+
+async function withLoopbackLogin(dir, run) {
+  const bin = join(dir, 'bin'), launchFile = join(dir, 'launch');
+  await mkdir(bin);
+  const quotedLaunchFile = `'${launchFile.replaceAll("'", "'\\''")}'`;
+  for (const command of ['open', 'xdg-open']) {
+    await writeFile(join(bin, command), `#!/bin/sh\nprintf '%s\\n%s\\n' "$0" "$1" > ${quotedLaunchFile}\n`, { mode: 0o700 });
+  }
+  const savedPath = process.env.PATH, originalFetch = globalThis.fetch;
+  // Do not fall through to any real system browser, including macOS's open.
+  process.env.PATH = bin;
+  const controller = new AbortController();
+  globalThis.fetch = async url => {
+    assert.equal(String(url), `${issuer}/.well-known/openid-configuration`, 'unexpected network request');
+    return Response.json(discovery);
+  };
+  let pending;
+  try {
+    pending = login(dir, 'default', controller.signal);
+    pending.catch(() => {}); // Cleanup owns early rejection, even if the test body fails.
+    await run({ pending, controller, waitForLaunch: async () => {
+      for (let i = 0; i < 200; i++) {
+        let captured;
+        try { captured = await readFile(launchFile, 'utf8'); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        const [command, url, complete] = captured?.split('\n') ?? [];
+        if (command && url && complete === '') {
+          assert.equal(basename(command), process.platform === 'darwin' ? 'open' : 'xdg-open');
+          return new URL(url);
+        }
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      assert.fail('synthetic browser did not capture the authorization URL');
+    } });
+  } finally {
+    controller.abort();
+    await pending?.catch(() => {});
+    if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    globalThis.fetch = originalFetch;
+  }
+}
+
+test('loopback login with synthetic discovery retains PKCE, rejects late callbacks after cancellation', async () => {
+  const dir = await temporary(), originalFetch = globalThis.fetch;
+  try {
+    await withLoopbackLogin(dir, async ({ pending, controller, waitForLaunch }) => {
+      const launch = await waitForLaunch();
+      assert.equal(launch.searchParams.get('code_challenge_method'), 'S256');
+      const redirect = new URL(launch.searchParams.get('redirect_uri'));
+      redirect.search = new URLSearchParams({ state: launch.searchParams.get('state'), code: 'mock-code', client_id: 'mock-issued' }).toString();
+      controller.abort(); await assert.rejects(pending);
+      await assert.rejects(originalFetch(redirect));
+      await assert.rejects(read(dir), { code: 'ENOENT' });
+      assert.equal((await stat(dir)).mode & 0o077, 0);
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('loopback fixture cancels and settles login after an assertion failure before restoring globals', async () => {
+  const dir = await temporary(), originalFetch = globalThis.fetch, savedPath = process.env.PATH;
+  let redirect, pending;
+  try {
+    await assert.rejects(withLoopbackLogin(dir, async fixture => {
+      pending = fixture.pending;
+      const launch = await fixture.waitForLaunch();
+      redirect = new URL(launch.searchParams.get('redirect_uri'));
+      assert.fail('synthetic early assertion failure');
+    }), { code: 'ERR_ASSERTION', message: 'synthetic early assertion failure' });
+    await assert.rejects(pending, { name: 'AbortError' });
+    assert.equal(globalThis.fetch, originalFetch); assert.equal(process.env.PATH, savedPath);
+    // Check before removing the directory: cleanup must release the actual lock/listener.
+    await assert.rejects(stat(join(dir, '.lock')), { code: 'ENOENT' });
+    await assert.rejects(originalFetch(redirect));
+    await assert.rejects(read(dir), { code: 'ENOENT' });
+    assert.equal(await exclusive(dir, async () => 42), 42);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });

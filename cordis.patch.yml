@@ -1,0 +1,9 @@
+# Installing this bundle mounts the provider and its Models/composer UI.
+- insert:
+    - id: dsh-cleangpt-plugin
+      name: dsh-cleangpt-plugin
+      config:
+        account: default
+        reasoningEfforts: [none, minimal, low, medium, high, xhigh, max]
+        serviceTiers: [auto, default, fast, ultrafast, priority, flex, scale]
+        allowUncappedAuxiliary: false

@@ -22,7 +22,7 @@ npm test
 npm pack --ignore-scripts
 ```
 
-Git 仓库与源码包保留 `package-lock.json`，可用 `npm ci` 重建。可安装 tgz 同时包含已编译 `dist`、源码、测试和配置示例；npm 打包规则不包含 package-lock。Node 24+，macOS 已验证 mock；凭据权限检查面向 Unix，当前仅验证 macOS；Linux 未验证，Windows 不支持。
+Git 仓库与源码包保留 `package-lock.json`，可用 `npm ci` 重建。可安装 tgz 同时包含已编译 `dist`、源码、测试和配置示例；npm 打包规则不包含 package-lock。Node 24+，macOS 已验证 mock；凭据权限检查面向 Unix，已验证 Linux 隔离 profile 与 macOS 基线 mock，Windows 不支持。
 
 ## 手动安装与授权
 
@@ -32,9 +32,9 @@ Git 仓库与源码包保留 `package-lock.json`，可用 `npm ci` 重建。可�
 dsh plugin --profile web add /ABSOLUTE/PATH/dsh-cleangpt-plugin-0.1.0.tgz
 ```
 
-随后在已安装的 profile 中选择包名 `dsh-cleangpt-plugin`；内部模型 route 保持 `chatgpt-plan`，用于会话路由兼容。
+安装会自动加入插件 bundle，挂载 Host provider 和预编译浏览器 UI；内部模型 route 保持 `chatgpt-plan`。
 
-然后将 `example.cordis.patch.yml` 中的 insert 条目手动加入该 profile 的 `cordis.patch.yml`。这是 DSH 官方 patch-list 格式；现有条目的 config 是整体替换，别覆盖自己已有的其他配置。重启或等待 profile 配置重载。选择 `dsh-cleangpt-plugin (default)` 路由，再在动态模型目录中选择模型。安装和配置写入会改变运行环境，本文只提供步骤。
+重启 DSH，打开 Settings → Models → ChatGPT subscription。点击 Continue with ChatGPT 会在 **Host 电脑的系统浏览器**打开官方授权页；等待期间可取消，已登录可重新授权。远程浏览器用户需要能够操作 Host 浏览器及其 loopback 回调。前端不会获得 token、OAuth URL 或 ID-token hint。若需要改账号标签或 authDir，参考 `example.cordis.patch.yml` 覆盖该 profile 配置；config 整体替换，保留你需要的其他字段。
 
 登录与创建注册会产生**持续访问权限**：可在当前登录用户的本机保存和刷新你明确授予的 ChatGPT plan 权限。运行前须由你具体批准。开发过程中不执行以下命令：
 
@@ -58,8 +58,8 @@ node dist/auth.js logout default
 ## 模型、思考强度与加速模式
 
 - 模型：用相同 OAuth access token 读取官方 `/v1/models` 的 `models` 数组，按服务端顺序展示 `visibility: list`，显示 `display_name`，请求用 `slug`。不硬编码模型名单。底层也允许显式模型 ID，由服务端验证。
-- 思考强度：`reasoningEffort` 默认省略；任意显式字符串原样作为 `reasoning.effort`。`reasoningEfforts` 是你希望放进 DSH 原生选择器的候选列表，**不是已验证的服务端能力**。可填写服务端正式支持的新值；插件不改写、不降档。配置默认强度会注册并在 DSH 准备请求时记录。
-- 加速：`serviceTier` 原样作为官方 `service_tier`。例如 `fast` 仅是参数示例，并不保证你的模型/plan 可用；不把它擅自替换成 `priority`。省略则由服务端决定。
+- 思考强度：`reasoningEffort` 默认省略；任意显式字符串原样作为 `reasoning.effort`。`reasoningEfforts` 默认列出公开 Responses 候选 `none/minimal/low/medium/high/xhigh/max`，也允许任意未来字符串；这是放进 DSH 原生选择器的候选列表，**不是已验证的服务端能力**。可填写服务端正式支持的新值；插件不改写、不降档。配置默认强度会注册并在 DSH 准备请求时记录。
+- 加速：输入框旁的同一个 DSH 原生 Speed 菜单默认提供 `auto/default/fast/ultrafast/priority/flex/scale`，逐项原样发送 `service_tier`。Auto 是新会话及无 sessionId 调用的默认值；其他选项均标明 server validates。Fast 使用 `fast`，Priority 使用 `priority`，保留两种写法而不改写；Ultrafast 使用 `ultrafast`。`serviceTiers` 可配置其他/未来字符串；兼容的 `serviceTier` 单值也会加入同一菜单候选，不再作为全局默认。已保存的候选即使随后从配置移除，仍按原字符串显示和恢复。插件不新增 effort 控件。
 - 官方 SIWC 文档目前没有定义完整 effort/tier 能力目录 schema，因此不猜测 catalog 中的未文档化字段，也不声称“所有账号支持所有模型和强度”。只有收到真实 `response.completed` 才算本次资格与推理成功。目录出现模型、成功登录、或 mock 通过均不能证明有资格。
 
 可选配置示例：
@@ -68,11 +68,12 @@ node dist/auth.js logout default
 config:
   account: default
   reasoningEffort: high
-  reasoningEfforts: [low, medium, high]
-  serviceTier: fast
+  reasoningEfforts: [none, minimal, low, medium, high, xhigh, max]
+  serviceTiers: [auto, default, fast, ultrafast, priority, flex, scale, future-tier]
+  # serviceTier: legacy-tier  # 兼容旧配置：加入菜单候选，默认仍 Auto
 ```
 
-变更配置会作用于重载后的新 adapter；已准备的调用保留自己的 adapter 参数，不会在半轮中切换账号或 tier。
+speed 使用 DSH 自带紧凑按钮/菜单，与原生模型/effort 控件同高。Host 的 cleangpt storage domain 以 sessionId 为键持久化，成功落盘后 UI 才更新。同会话的多个 tab 通过 Host 持久化变更通知同步；断线重连重新读取，旧会话/旧读取及迟到保存响应不会覆盖较新状态。A/B 会话互不影响；切回、刷新和重启恢复同一会话的值，新会话和 fork 默认 Auto，不自动继承。无 sessionId 的辅助调用也明确使用 Auto。一次请求及同 turn/step 的内部重试冻结首次档位，用户切换影响后续新请求。取消不会自动重发任务，之后仍可继续发消息；插件不回滚工具的外部副作用。effort 的保存和恢复完全由 DSH 原生会话选择机制承担。
 
 ## 协议、错误与数据处理
 
@@ -108,7 +109,7 @@ config:
 
 真实 OAuth 注册/浏览器回调、refresh 生产行为、模型/强度/tier 权限、真实 function tools、多轮 encrypted reasoning，以及完整已安装 DSH UI 的体验仍须在明确批准后验证；当前没有索取或使用真实凭据。没有客户端注册 ID 阻塞代码，因为官方允许动态首登；真实能力开放状态仍未知。
 
-这是刻意精简的**文本 + DSH function tools** provider；不宣称图像/音频/视频或 hosted tools。遇到未支持内容会明确失败。模型目录不会自动猜测上下文长度或推理能力；DSH 原生思考选择器需要显式 `reasoningEfforts` 候选。未实现订阅余额查询、GUI 登录按钮、hosted MCP、上传文件或跨设备凭据迁移。CLI 超时/网络失败会停止，不在后台维持登录或继续额度请求。已启动的共享 token 轮换可在调用方取消后继续，最长 30 秒，以安全保存结果；它不发起模型推理。
+这是刻意精简的**文本 + DSH function tools** provider；不宣称图像/音频/视频或 hosted tools。遇到未支持内容会明确失败。模型目录不会自动猜测上下文长度或推理能力；DSH 原生思考选择器需要显式 `reasoningEfforts` 候选。未实现订阅余额查询、hosted MCP、上传文件或跨设备凭据迁移。CLI 超时/网络失败会停止，不在后台维持登录或继续额度请求。已启动的共享 token 轮换可在调用方取消后继续，最长 30 秒，以安全保存结果；它不发起模型推理。
 
 ## 官方依据
 
@@ -126,3 +127,11 @@ config:
 ## 测试数据与公开发布
 
 测试中的 bearer/token/client ID/subject 全部是带 mock 标记的合成值，RSA 密钥仅在测试进程中临时生成；不包含保存的账号文件或真实授权。Git 公开范围为源码、测试、锁文件、MIT LICENSE 与使用配置；dist、安装包、认证目录、研究下载与本机日志均忽略。仓库未发布 npm，也不会自动安装 DSH profile 或自动发起登录。
+
+## 升级与卸载
+
+升级：保存需要的 profile 覆盖配置，执行同一 `dsh plugin --profile web add /ABSOLUTE/PATH/新包.tgz` 并重启。旧版若手工插入过同 id 的条目，请先移除重复 insert，保留 `- id: dsh-cleangpt-plugin` 配置覆盖。安装和升级不会发起真实授权。
+
+卸载：如需撤销授权，先显式执行 `dsh-cleangpt-plugin logout ACCOUNT`；随后 `dsh plugin --profile web remove dsh-cleangpt-plugin`，移除该 profile 中插件的配置覆盖并重启。卸载不自动删除独立凭据目录或持久化会话偏好；确认不再使用后可手动清理插件专属数据。不会改动其他应用凭据。
+
+公开候选依据（2026-10-19 核对）：[Reasoning guide](https://developers.openai.com/api/docs/guides/reasoning)、[Fast mode](https://developers.openai.com/api/docs/guides/fast-mode)、[Ultrafast mode（含 HTTP）](https://developers.openai.com/api/docs/guides/ultrafast-mode)，以及已锁定官方 OpenAI SDK 7.19.0 的 Responses ServiceTier 类型。API 文档不是 SIWC/plan 资格证明；每个模型可能拒绝部分 effort/tier。`ultra` 不在默认 effort 候选中，不声称官方 SIWC 支持。服务端拒绝时保留实际错误码、参数和请求 ID，不做候选降档或静默替换。
